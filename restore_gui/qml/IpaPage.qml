@@ -46,7 +46,7 @@ ColumnLayout {
                 AppIcon { icon: row.icon; letter: row.letter; tint: row.tint; size: 40 }
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 1
-                    Text { text: row.title; color: P.text; font.family: P.font; font.pixelSize: 13
+                    Text { textFormat: Text.PlainText; text: row.title; color: P.text; font.family: P.font; font.pixelSize: 13
                            elide: Text.ElideMiddle; Layout.fillWidth: true }
                     Text { text: row.info; color: P.muted; font.family: P.font; font.pixelSize: 11 }
                 }

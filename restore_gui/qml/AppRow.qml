@@ -39,9 +39,9 @@ Rectangle {
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 1
-            Text { text: row.title; color: P.text; font.family: P.font; font.pixelSize: 14
+            Text { textFormat: Text.PlainText; text: row.title; color: P.text; font.family: P.font; font.pixelSize: 14
                    elide: Text.ElideRight; Layout.fillWidth: true }
-            Text { text: row.sub; color: P.muted; font.family: P.font; font.pixelSize: 11
+            Text { textFormat: Text.PlainText; text: row.sub; color: P.muted; font.family: P.font; font.pixelSize: 11
                    visible: text.length > 0; elide: Text.ElideRight; Layout.fillWidth: true }
         }
         Rectangle {

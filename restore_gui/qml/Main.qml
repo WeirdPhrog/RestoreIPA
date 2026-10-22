@@ -69,7 +69,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.leftMargin: 28; Layout.rightMargin: 28; Layout.topMargin: 6; Layout.bottomMargin: 8
                 spacing: 10
-                Text { text: backend.status; color: P.muted; font.family: P.font; font.pixelSize: 12
+                Text { textFormat: Text.PlainText; text: backend.status; color: P.muted; font.family: P.font; font.pixelSize: 12
                        elide: Text.ElideRight; Layout.fillWidth: true }
                 ProgressBar {
                     visible: backend.busy

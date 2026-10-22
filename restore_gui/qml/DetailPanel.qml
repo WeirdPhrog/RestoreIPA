@@ -39,7 +39,7 @@ Drawer {
                       tint: backend.detailApp.tint || P.accent }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 2
-                Text { text: backend.detailApp.name || ""; color: P.text; font.family: P.font; font.pixelSize: 19
+                Text { textFormat: Text.PlainText; text: backend.detailApp.name || ""; color: P.text; font.family: P.font; font.pixelSize: 19
                        font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 Text {
                     text: "App ID " + (backend.detailApp.id || "")
@@ -223,9 +223,9 @@ Drawer {
                                 AppIcon { size: 32; icon: clone.icon; letter: clone.letter; tint: clone.tint }
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 0
-                                    Text { text: clone.title; color: P.text; font.family: P.font; font.pixelSize: 12
+                                    Text { textFormat: Text.PlainText; text: clone.title; color: P.text; font.family: P.font; font.pixelSize: 12
                                            font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                    Text { text: clone.sub; color: P.muted; font.family: P.font; font.pixelSize: 10
+                                    Text { textFormat: Text.PlainText; text: clone.sub; color: P.muted; font.family: P.font; font.pixelSize: 10
                                            elide: Text.ElideRight; Layout.fillWidth: true }
                                 }
                                 Text { text: clone.status; color: panel.kindColor(clone.statusKind)

@@ -38,7 +38,7 @@ Rectangle {
                        onToggled: backend.toggleSelected("popular", tile.index) }
         }
         Item { Layout.fillHeight: true }
-        Text { text: tile.title; color: P.text; font.family: P.font; font.pixelSize: 14; font.bold: true
+        Text { textFormat: Text.PlainText; text: tile.title; color: P.text; font.family: P.font; font.pixelSize: 14; font.bold: true
                elide: Text.ElideRight; Layout.fillWidth: true }
         Text {
             Layout.fillWidth: true
