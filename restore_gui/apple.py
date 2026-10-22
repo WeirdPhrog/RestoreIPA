@@ -237,9 +237,19 @@ def kill_procs(tag=None):
             pass  # уже завершился
 
 
-def run_quiet(cmd, timeout=90, env=None):
+def clear_stale_locks():
+    """Удалить *.lock в основной сессии. Звать, только когда в ней точно не работает ipatool (под dlock):
+    lock-файлы остаются от убитых процессов — после «Остановить» или аварийного завершения."""
+    for stale in (core.IPATOOL_HOME / ".ipatool").glob("*.lock"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def run_quiet(cmd, timeout=90, env=None, tag=""):
     """Запуск без построчного журнала: (код возврата, весь вывод без цветовых кодов)."""
-    p = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    p = popen(cmd, tag=tag, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
               encoding="utf-8", errors="replace",
               env=env if env is not None else (core.ipatool_env() if core.is_ipatool(cmd) else None))
     try:
@@ -270,11 +280,7 @@ def in_session_copies(items, fn, workers, lock=None):
     envs = queue.Queue()
     try:
         with lock or contextlib.nullcontext():
-            for stale in src_dir.glob("*.lock"):  # остались от аварийно завершённых процессов
-                try:
-                    stale.unlink()
-                except OSError:
-                    pass
+            clear_stale_locks()  # остались от аварийно завершённых процессов
             for w in range(n):
                 h = root / f"w{w}"
                 h.mkdir()

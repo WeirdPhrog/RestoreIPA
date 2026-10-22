@@ -18,9 +18,9 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, bundled, clip, explain_error, fatal_error, fetch_available,
-                    forget, in_session_copies, kill_procs, list_versions_cmd, ownership, parse_purchases,
-                    parse_versions, popen, run_quiet, sap_ready, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, bundled, clear_stale_locks, clip, explain_error, fatal_error,
+                    fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd, ownership,
+                    parse_purchases, parse_versions, popen, run_quiet, sap_ready, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 SCAN_WORKERS = 4  # параллельных проверок владения
@@ -144,9 +144,14 @@ class TasksMixin:
     def stream(self, cmd, quiet_json=False):
         """Запуск с построчным журналом. ipatool работает с основной сессией — под self.dlock, как и dq:
         иначе панель приложения запустила бы второй ipatool на той же папке во время скачивания."""
+        if self.stop_flag:  # «Остановить» нажали между командами — следующую не начинаем
+            self.log("Остановлено.")
+            return 1, "Остановлено."
         self.log("$ " + core.masked(cmd))
         ipatool = core.is_ipatool(cmd)
         with self.dlock if ipatool else contextlib.nullcontext():
+            if ipatool:
+                clear_stale_locks()
             p = popen(cmd, tag="task", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                       text=True, encoding="utf-8", errors="replace", env=core.ipatool_env() if ipatool else None)
             lines = []
@@ -165,10 +170,12 @@ class TasksMixin:
             self.log("Остановлено.")
         return p.returncode, "".join(lines)
 
-    def dq(self, cmd, timeout=90):
-        """run_quiet через основную сессию ipatool — по одной команде за раз (общая папка сессии)."""
+    def dq(self, cmd, timeout=90, tag=""):
+        """run_quiet через основную сессию ipatool — по одной команде за раз (общая папка сессии).
+        tag="task" — команда основной операции: её прерывает «Остановить»."""
         with self.dlock:
-            return run_quiet(cmd, timeout=timeout)
+            clear_stale_locks()
+            return run_quiet(cmd, timeout=timeout, tag=tag)
 
     def hint(self, text):
         hints = explain_error(text)
@@ -311,7 +318,7 @@ class TasksMixin:
         def probe(app_id, env):
             if self.stop_flag or state["abort"]:
                 return
-            rc, out = run_quiet(list_versions_cmd(ipatool, kc, app_id), env=env)
+            rc, out = run_quiet(list_versions_cmd(ipatool, kc, app_id), env=env, tag="task")
             owns = ownership(rc, out)
             with lock:
                 state["done"] += 1
@@ -406,7 +413,7 @@ class TasksMixin:
         bid = ipa_info(ipa).get("CFBundleIdentifier")
         if not bid:
             return
-        rc, out = run_quiet(installer_cmd(installer, "list"), timeout=60)
+        rc, out = run_quiet(installer_cmd(installer, "list"), timeout=60, tag="task")
         if rc == 0 and bid in out:
             self.log(f"Приложение {bid} уже установлено на iPhone — ставлю поверх, данные сохранятся.")
 
@@ -418,7 +425,7 @@ class TasksMixin:
         cmd = installer_cmd(installer, "info") if installer else None
         if not cmd:
             return None
-        rc, out = run_quiet(cmd, timeout=45)
+        rc, out = run_quiet(cmd, timeout=45, tag="task")
         if rc != 0:
             return None
         m = re.search(r'"?ProductVersion"?\s*[:=]\s*"?(\d+(?:\.\d+){0,2})', out) or \
@@ -506,7 +513,7 @@ class TasksMixin:
             if self.stop_flag:
                 break  # итог ниже покажет, что успели
             self.log(f"── {n}/{len(apps)}: {app['name']} ({app['id']})")
-            rc, out = self.dq(list_versions_cmd(ipatool, kc, app["id"]))
+            rc, out = self.dq(list_versions_cmd(ipatool, kc, app["id"]), tag="task")
             owned = ownership(rc, out)
             if not owned:
                 if owned is False:

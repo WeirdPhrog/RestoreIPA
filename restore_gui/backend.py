@@ -431,6 +431,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
         if self._busy:
             self.show_notice("Подождите", "Сначала дождитесь окончания текущей операции или нажмите «Остановить».")
             return
+        kill_procs()  # проверки в панели приложения: они не считаются операцией и иначе шли бы по стираемой сессии
         self.wipe_session()
         storage.forget_email()
         self.owned_state.clear()

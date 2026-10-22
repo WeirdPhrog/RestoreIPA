@@ -120,6 +120,20 @@ class Window(unittest.TestCase):
         self.assertNotEqual(result["r"][0], 0)
         b.stop_flag = False
 
+    def test_no_new_command_after_stop(self):
+        """«Остановить» между командами (например, во время проверки iPhone) — следующая не запускается."""
+        import tempfile
+        b = self.backend
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "ran"
+            b.stop_flag = True
+            try:
+                rc, _ = b.stream([sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"])
+            finally:
+                b.stop_flag = False
+            self.assertNotEqual(rc, 0)
+            self.assertFalse(marker.exists(), "команда запустилась после «Остановить»")
+
     def test_pick_compatible_removes_probe_downloads(self):
         """Подбор версии оставляет в архиве только подошедшую версию, пробные IPA удаляет."""
         import tempfile
