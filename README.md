@@ -111,6 +111,12 @@ python restore_apps.py search сбер
 python restore_apps.py restore 492224193
 ```
 
+У консольной версии каждая команда — отдельный процесс, поэтому сессия входа и пароль к её зашифрованному файлу (`%LOCALAPPDATA%\Restore\keychain.pass`) хранятся между командами. Закончив, выйдите — это удалит и то и другое:
+
+```bash
+python restore_apps.py logout
+```
+
 Тесты логики (без сети, Apple ID и iPhone):
 
 ```bash

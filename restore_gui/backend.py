@@ -100,10 +100,12 @@ class Backend(QObject, TasksMixin, DetailMixin):
         for k, v in self.DEFAULTS.items():
             setattr(self, "_" + k, v)
         core.SESSION_PASSPHRASE = secrets.token_urlsafe(32)  # только в памяти, на диск не пишется
-        try:
-            (Path.home() / ".restore_appstore" / "keychain.pass").unlink()  # пароль к сессии из ранних версий
-        except OSError:
-            pass
+        # пароль к сессии открытым текстом: из ранних версий и от консольной версии (её сессию GUI всё равно стирает)
+        for old in (Path.home() / ".restore_appstore" / "keychain.pass", core.KEYCHAIN_PASS):
+            try:
+                old.unlink()
+            except OSError:
+                pass
         storage.forget_email()  # email.txt прежних версий: email Apple ID на диске не храним
         self.catalog = Catalog(core.load_catalog())
         self.purchases = []

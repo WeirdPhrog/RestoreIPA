@@ -20,6 +20,7 @@ Apple отдаст ошибку лицензии — обойти это скр�
   python restore_apps.py login
   python restore_apps.py download 1660762523
   python restore_apps.py restore "ДомКлик (ДКлик)"
+  python restore_apps.py logout
 """
 import argparse
 import csv
@@ -75,6 +76,8 @@ INSTALLED = (HERE / "installed.txt").exists()  # файл кладёт уста�
 OUT_DIR = HERE / "ipa" if (not INSTALLED and _writable(HERE / "ipa")) else Path.home() / "Documents" / APP_NAME / "ipa"
 # пароль к зашифрованному файлу сессии; GUI задаёт случайный на каждый запуск и нигде его не хранит
 SESSION_PASSPHRASE = None
+# у консольной версии команды — отдельные процессы, поэтому пароль к сессии лежит в файле (удаляет `logout`)
+KEYCHAIN_PASS = DATA_DIR / "keychain.pass"
 
 
 # ---------- каталог ----------
@@ -117,6 +120,7 @@ def need(binary, hint):
 
 
 SECRET_FLAGS = ("--password", "--keychain-passphrase")
+NEEDS_CODE = re.compile(r"2fa|auth.?code|verification|two.?factor", re.I)  # ipatool просит код подтверждения
 
 
 def masked(cmd):
@@ -154,9 +158,8 @@ def keychain_args():
 
     if SESSION_PASSPHRASE:
         return ["--keychain-passphrase", SESSION_PASSPHRASE, "--non-interactive"]
-    folder = DATA_DIR
-    folder.mkdir(parents=True, exist_ok=True)
-    f = folder / "keychain.pass"
+    f = KEYCHAIN_PASS
+    f.parent.mkdir(parents=True, exist_ok=True)
     if not f.exists() or not f.read_text(encoding="utf-8").strip():
         f.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         try:
@@ -219,14 +222,31 @@ def cmd_login(a):
             cmd += ["--auth-code", code]
         r = run(cmd)
         out = (r.stdout or "") + (r.stderr or "")
-        if r.returncode == 0:
+        # ipatool 2.7 отвечает «2FA code is required…» с кодом возврата 0 — это ещё не вход
+        if r.returncode == 0 and not NEEDS_CODE.search(out):
             print(out.strip() or "Вход выполнен.")
             return 0
-        if not code and re.search(r"2fa|auth.?code|verification|two.?factor", out, re.I):
+        if not code and NEEDS_CODE.search(out):
             code = input("Код двухфакторной аутентификации: ").strip()
-            continue
+            if code:
+                continue
         print(out.strip())
+        print("Вход не удался.")
         return 1
+
+
+def cmd_logout(a):
+    """Завершить сессию: `ipatool auth revoke`, удалить папку сессии и файл с паролем к ней."""
+    ipatool = shutil.which("ipatool")
+    if ipatool and (IPATOOL_HOME / ".ipatool").exists() and KEYCHAIN_PASS.exists():
+        run([ipatool, *keychain_args(), "auth", "revoke"])
+    shutil.rmtree(IPATOOL_HOME / ".ipatool", ignore_errors=True)
+    try:
+        KEYCHAIN_PASS.unlink()
+    except OSError:
+        pass
+    print("Сессия Apple ID удалена с компьютера.")
+    return 0
 
 
 def cmd_download(a):
@@ -293,6 +313,9 @@ def main():
     s.add_argument("--email")
     s.add_argument("--code", help="код 2FA, если уже есть")
     s.set_defaults(fn=cmd_login)
+
+    s = sub.add_parser("logout", help="выйти: удалить сессию Apple ID с компьютера")
+    s.set_defaults(fn=cmd_logout)
 
     for name, fn, hlp in (("download", cmd_download, "скачать IPA"),
                           ("restore", cmd_restore, "скачать и установить")):

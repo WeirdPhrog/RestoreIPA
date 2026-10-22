@@ -191,7 +191,7 @@ class TasksMixin:
                 return
             # ipatool может ответить «2FA code is required…» и при этом завершиться с кодом 0: вход НЕ выполнен,
             # нужен код. Поэтому сначала смотрим на просьбу о коде, а успех подтверждаем через `auth info`.
-            needs_code = re.search(r"2fa|auth.?code|verification|two.?factor", out, re.I)
+            needs_code = core.NEEDS_CODE.search(out)
             if rc == 0 and not needs_code and self.session_ok(ipatool):
                 self.log("Вход выполнен.")
                 self.post(lambda: self.on_login_result(True, email))  # ни email, ни пароль на диск не пишутся
