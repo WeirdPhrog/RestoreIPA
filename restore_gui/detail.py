@@ -248,7 +248,7 @@ class DetailMixin:
             self.log(f"{name}: номера не получены для {len(fails)} из {len(todo)} версий. Такую версию всё равно "
                      "можно выбрать и скачать.")
             self.hint("\n".join(o for _, o in fails))
-        storage.save_meta(app_id, meta)
+        storage.save_meta(app_id, snap)  # не meta: его может дополнять параллельный fetch_meta («Показать ещё»)
 
     def store_check(self, d):
         app = d["app"]

@@ -2,9 +2,11 @@
 не хранятся."""
 import json
 import re
+import threading
 
 import restore_apps as core
 
+_LOCK = threading.Lock()  # чтение-изменение-запись файлов ниже идёт из нескольких потоков
 HISTORY = core.DATA_DIR / "history.json"  # {app_id: [ID версий, скачанных через программу]}
 META_CACHE = core.DATA_DIR / "versions_cache.json"  # номера и даты версий: публичные данные Apple
 EMAIL = core.DATA_DIR / "email.txt"  # так прежние версии запоминали email для поля входа; теперь только удаляется
@@ -33,11 +35,12 @@ def record_download(app_id, version):
     """Помним, какие версии скачаны через эту программу (Apple такой список не отдаёт)."""
     if not version:
         return
-    h = load_history()
-    lst = h.setdefault(str(app_id), [])
-    if str(version) not in lst:
-        lst.append(str(version))
-    _write(HISTORY, json.dumps(h))
+    with _LOCK:
+        h = load_history()
+        lst = h.setdefault(str(app_id), [])
+        if str(version) not in lst:
+            lst.append(str(version))
+        _write(HISTORY, json.dumps(h))
 
 
 def load_meta():
@@ -46,9 +49,10 @@ def load_meta():
 
 def save_meta(app_id, meta):
     """Добавить в кэш номера и даты версий приложения: {ID версии: (номер, дата)}."""
-    cache = load_meta()
-    cache.setdefault(str(app_id), {}).update({v: list(x) for v, x in meta.items()})
-    _write(META_CACHE, json.dumps(cache))
+    with _LOCK:
+        cache = load_meta()
+        cache.setdefault(str(app_id), {}).update({v: list(x) for v, x in meta.items()})
+        _write(META_CACHE, json.dumps(cache))
 
 
 def forget_email():

@@ -41,6 +41,9 @@ class TasksMixin:
         if not email or not password:
             self.show_notice("Вход", "Введите Apple ID и пароль.")
             return
+        if self.busy:  # кнопка в это время заблокирована, а Enter в поле пароля — нет
+            self.show_notice("Подождите", "Сейчас выполняется другая операция — войдите после её окончания.")
+            return
         ipatool = self.need_ipatool()
         if ipatool:
             self.start("Вход в Apple ID", self.task_login, ipatool, email, password)
