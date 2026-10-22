@@ -445,6 +445,17 @@ class Backend(QObject, TasksMixin, DetailMixin):
         self.refresh_list_keep()
         self.showPage("mine")
 
+    def add_found(self, found):
+        """Найденное «Найти мои удалённые» — в «Мои»: к уже загруженным покупкам, без перехода на страницу
+        (поиск идёт минутами, а находки приходят по одной — человек тем временем может смотреть каталог)."""
+        known = {a["id"] for a in self.purchases}
+        self.purchases = sorted(self.purchases + [{"id": i, "name": n} for i, n in found.items() if i not in known],
+                                key=lambda a: a["name"].casefold())
+        for i in found:
+            self.owned_state[i] = True
+        self.refresh_list_keep()
+        self.refresh_mine()
+
     # ---------- кнопки ----------
     @Slot()
     def findMine(self):

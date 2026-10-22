@@ -318,8 +318,8 @@ class TasksMixin:
                     if owns:
                         owned[app_id] = names[app_id]
                         self.log(f"  ✓ {names[app_id]} ({app_id}) — есть в вашей истории")
-                        found = dict(owned)
-                        self.post(lambda: self.on_purchases_result(found, set()))
+                        found = {app_id: names[app_id]}
+                        self.post(lambda: self.add_found(found))
                 elif SESSION_LOST.search(out):
                     self.log("Вход не выполнен или сессия истекла. Нажмите «Войти» и повторите.")
                     state["abort"] = True
