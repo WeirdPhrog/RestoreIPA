@@ -1,4 +1,5 @@
 """ipatool и сервера Apple: запуск команд, разбор ответов, понятные объяснения ошибок. Без интерфейса."""
+import contextlib
 import json
 import os
 import queue
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -205,47 +207,82 @@ def fetch_available(ids, country, chunk=100):
                 found.add(int(x["trackId"]))
     return found
 
+
+# запущенные ipatool и установщик: {процесс: метка}. Без этого «Остановить» не может прервать скачивание,
+# а после закрытия окна процессы остаются работать (на Windows дочерний процесс не завершается с родителем).
+_PROCS, _PROCS_LOCK = {}, threading.Lock()
+
+
+def popen(cmd, tag="", **kw):
+    """subprocess.Popen с учётом в _PROCS; tag="task" — основная операция (её прерывает «Остановить»)."""
+    p = subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
+    with _PROCS_LOCK:
+        _PROCS[p] = tag
+    return p
+
+
+def forget(p):
+    with _PROCS_LOCK:
+        _PROCS.pop(p, None)
+
+
+def kill_procs(tag=None):
+    """Завершить запущенные процессы: с меткой tag или все (tag=None — при закрытии программы)."""
+    with _PROCS_LOCK:
+        procs = [p for p, t in _PROCS.items() if tag is None or t == tag]
+    for p in procs:
+        try:
+            p.kill()
+        except OSError:
+            pass  # уже завершился
+
+
 def run_quiet(cmd, timeout=90, env=None):
     """Запуск без построчного журнала: (код возврата, весь вывод без цветовых кодов)."""
+    p = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+              encoding="utf-8", errors="replace",
+              env=env if env is not None else (core.ipatool_env() if core.is_ipatool(cmd) else None))
     try:
-        p = subprocess.run(
-            cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW,
-            env=env if env is not None else (core.ipatool_env() if core.is_ipatool(cmd) else None),
-        )
+        out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
         return 124, "timeout"
-    return p.returncode, ANSI.sub("", (p.stdout or "") + (p.stderr or ""))
+    finally:
+        forget(p)
+    return p.returncode, ANSI.sub("", (out or "") + (err or ""))
 
 
-def in_session_copies(items, fn, workers):
+def in_session_copies(items, fn, workers, lock=None):
     """fn(item, env) для каждого item в нескольких потоках: запрос к Apple ждёт сеть 1–2 с, так быстрее.
 
     ipatool хранит сессию и cookies в ~/.ipatool, и параллельные процессы портят общие файлы (падение
     с panic), поэтому у каждого потока своя копия сессии во временной папке; env — окружение с этой папкой.
     Копии удаляются в конце (и при следующем запуске программы, если она упала — см. wipe_session).
+    lock — блокировка основной сессии: копируем её, только когда ipatool в неё не пишет.
     """
     items = list(items)
     if not items:
         return
     n = max(1, min(workers, len(items)))
     src_dir = core.IPATOOL_HOME / ".ipatool"
-    for stale in src_dir.glob("*.lock"):  # остались от аварийно завершённых процессов
-        try:
-            stale.unlink()
-        except OSError:
-            pass
     root = Path(tempfile.mkdtemp(prefix="restore_scan_"))
     envs = queue.Queue()
     try:
-        for w in range(n):
-            h = root / f"w{w}"
-            h.mkdir()
-            if src_dir.exists():
-                shutil.copytree(src_dir, h / ".ipatool", ignore=shutil.ignore_patterns("*.lock"))
-            # ipatool на Windows берёт домашнюю папку из HOMEDRIVE+HOMEPATH, на остальных ОС из HOME
-            drive, rest = os.path.splitdrive(str(h))
-            envs.put(dict(os.environ, USERPROFILE=str(h), HOME=str(h), HOMEDRIVE=drive, HOMEPATH=rest))
+        with lock or contextlib.nullcontext():
+            for stale in src_dir.glob("*.lock"):  # остались от аварийно завершённых процессов
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+            for w in range(n):
+                h = root / f"w{w}"
+                h.mkdir()
+                if src_dir.exists():
+                    shutil.copytree(src_dir, h / ".ipatool", ignore=shutil.ignore_patterns("*.lock"))
+                # ipatool на Windows берёт домашнюю папку из HOMEDRIVE+HOMEPATH, на остальных ОС из HOME
+                drive, rest = os.path.splitdrive(str(h))
+                envs.put(dict(os.environ, USERPROFILE=str(h), HOME=str(h), HOMEDRIVE=drive, HOMEPATH=rest))
 
         def one(item):
             env = envs.get()

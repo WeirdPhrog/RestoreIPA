@@ -112,7 +112,7 @@ class DetailMixin:
                 self.owned_state[a["id"]] = owned
             self.ui(d, lambda: self.paint_clones(d))
 
-        in_session_copies(todo, one, workers)
+        in_session_copies(todo, one, workers, lock=self.dlock)
         d["clone_wait"] = False
         self.ui(d, lambda: self.paint_clones(d))
         self.post(self.refresh_list_keep)
@@ -138,7 +138,10 @@ class DetailMixin:
             self.ui(d, lambda: self.fill_versions(d, [], {}))
             return
         kc = core.keychain_args()
-        self.set_lbl(d, "acc", "спрашиваю Apple… обычно 5–30 секунд", "muted")
+        if self.dlock.locked():  # ipatool занят скачиванием или входом — сессия у него
+            self.set_lbl(d, "acc", "жду окончания текущей операции…", "muted")
+        else:
+            self.set_lbl(d, "acc", "спрашиваю Apple… обычно 5–30 секунд", "muted")
         t0 = time.time()
         rc, out = self.dq(list_versions_cmd(ipatool, kc, app["id"]), timeout=180)
         took = time.time() - t0
@@ -236,7 +239,7 @@ class DetailMixin:
             self.ui(d, lambda: self.fill_versions(d, versions, snap))
 
         try:
-            in_session_copies(todo, one, workers)
+            in_session_copies(todo, one, workers, lock=self.dlock)
         finally:
             pending.difference_update(todo)
         snap = dict(meta)

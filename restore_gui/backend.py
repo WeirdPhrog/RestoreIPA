@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 import restore_apps as core
 
 from . import storage, theme
+from .apple import kill_procs
 from .catalog import Catalog, parse_app_ref, plural, split_disguise
 from .detail import DetailMixin
 from .icons import IconLoader, cached
@@ -536,5 +537,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
         self.icons.stop()
         if self.detail is not None:
             self.detail["alive"] = False
+        kill_procs()  # иначе ipatool и установщик продолжили бы работать без окна
         self.wipe_session()
         storage.forget_email()
