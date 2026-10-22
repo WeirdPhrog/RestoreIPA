@@ -1,16 +1,20 @@
 """Тесты логики без интерфейса и без сети: python -m unittest discover tests"""
+import contextlib
+import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 import plistlib
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import restore_apps as core  # noqa: E402
-from restore_gui import apple, device, storage  # noqa: E402
+from restore_gui import apple, device, icons, storage  # noqa: E402
 from restore_gui.catalog import (BANKS, Catalog, categorize, family_key, parse_app_ref, plural,  # noqa: E402
                                  split_disguise)
 
@@ -113,6 +117,27 @@ class AppleAnswers(unittest.TestCase):
         self.assertIn("истории покупок", apple.explain_error("license is required")[0])
         self.assertEqual(apple.explain_error("всё хорошо"), [])
 
+    def test_explain_error_is_not_too_broad(self):
+        # 429 внутри App ID или размера — не «Apple ограничил попытки»
+        self.assertEqual(apple.explain_error("failed to download app 1429500000 (14290 bytes)"), [])
+        self.assertIn("ограничил", apple.explain_error("HTTP 429 Too Many Requests")[0])
+        # блокировка аккаунта — без совета разблокировать iPhone
+        hints = apple.explain_error("your account has been locked")
+        self.assertEqual(len(hints), 1)
+        self.assertIn("Apple ID", hints[0])
+        self.assertIn("iPhone заблокирован", apple.explain_error("DeviceLocked")[0])
+        self.assertIn("пароль", apple.explain_error("Your Apple ID or password was entered incorrectly.")[0])
+        self.assertEqual(apple.explain_error("incorrect bundle version format"), [])
+        self.assertEqual(apple.explain_error("reading passphrase: EOF"), [])  # не «нет связи»
+        self.assertIn("DNS", apple.explain_error('Get "https://buy.itunes.apple.com/x": EOF')[0])
+
+    def test_fatal_error(self):
+        self.assertTrue(apple.fatal_error("dial tcp: i/o timeout"))
+        self.assertTrue(apple.fatal_error("failed to get account"))
+        self.assertTrue(apple.fatal_error("account is disabled"))
+        self.assertFalse(apple.fatal_error("license is required"))
+        self.assertFalse(apple.fatal_error(""))
+
     def test_clip(self):
         self.assertEqual(apple.clip("  коротко "), "коротко")
         self.assertEqual(apple.clip(""), "(пустой ответ)")
@@ -130,6 +155,81 @@ class AppleAnswers(unittest.TestCase):
         homes = {h for _, h in seen}
         self.assertLessEqual(len(homes), 3)
         self.assertFalse(any(Path(h).exists() for h in homes), "временные копии сессии не удалены")
+
+
+SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+class Processes(unittest.TestCase):
+    def test_run_quiet_timeout_kills_process(self):
+        t0 = time.time()
+        self.assertEqual(apple.run_quiet(SLEEPER, timeout=1), (124, "timeout"))
+        self.assertLess(time.time() - t0, 10)
+        self.assertEqual(apple._PROCS, {}, "процесс остался в списке запущенных")
+
+    def test_run_quiet_output(self):
+        rc, out = apple.run_quiet([sys.executable, "-c", "print('\\x1b[31mok\\x1b[0m')"])
+        self.assertEqual((rc, out.strip()), (0, "ok"))
+
+    def test_kill_procs_by_tag(self):
+        task, other = apple.popen(SLEEPER, tag="task"), apple.popen(SLEEPER)
+        try:
+            apple.kill_procs("task")
+            task.wait(timeout=10)
+            self.assertIsNone(other.poll(), "«Остановить» завершил не только основную операцию")
+            apple.kill_procs()
+            other.wait(timeout=10)
+        finally:
+            for p in (task, other):
+                apple.forget(p)
+                if p.poll() is None:
+                    p.kill()
+
+
+def lookup_answer(body):
+    """Подмена urlopen: ответ iTunes Lookup с телом body."""
+    return lambda *_a, **_k: contextlib.nullcontext(io.BytesIO(body))
+
+
+class Icons(unittest.TestCase):
+    def test_offline_does_not_hide_icons_for_a_week(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = icons.ICONS, icons.MISSING
+            icons.ICONS, icons.MISSING = Path(d), Path(d) / "missing.json"
+            loader = icons.IconLoader(lambda *_: None)
+            try:
+                with mock.patch.object(icons.urllib.request, "urlopen", side_effect=OSError("no network")):
+                    loader._run([111111111, 222222222])
+                self.assertEqual(json.loads(icons.MISSING.read_text(encoding="utf-8")), {})
+                # Apple ответил везде и иконки не дал — тогда «нет иконки» запоминается
+                with mock.patch.object(icons.urllib.request, "urlopen", side_effect=lookup_answer(b'{"results": []}')):
+                    loader._run([111111111])
+                self.assertIn("111111111", json.loads(icons.MISSING.read_text(encoding="utf-8")))
+            finally:
+                loader.stop()
+                icons.ICONS, icons.MISSING = old
+
+
+class ConsoleLogin(unittest.TestCase):
+    def run_login(self, answers, typed_code):
+        """cmd_login с ответами ipatool answers: (код возврата, спросили ли код 2FA)."""
+        calls = iter(answers)
+        args = mock.Mock(email="someone@example.com", code=None)
+        with mock.patch.object(core, "need", return_value="ipatool"), \
+                mock.patch.object(core, "keychain_args", return_value=[]), \
+                mock.patch.object(core, "run", side_effect=lambda cmd: next(calls)), \
+                mock.patch.object(core.getpass, "getpass", return_value="pw"), \
+                mock.patch("builtins.input", return_value=typed_code) as ask, \
+                mock.patch("builtins.print"):
+            return core.cmd_login(args), ask.called
+
+    def test_asks_2fa_even_when_ipatool_exits_0(self):
+        """ipatool 2.7: «2FA code is required…» с кодом 0 — консольная версия считала это входом."""
+        need = mock.Mock(returncode=0, stdout="INF 2FA code is required; supply it using '--auth-code'\n", stderr="")
+        ok = mock.Mock(returncode=0, stdout="INF success=true\n", stderr="")
+        self.assertEqual(self.run_login([need, ok], "123456"), (0, True))
+        self.assertEqual(self.run_login([need], ""), (1, True))  # код не ввели — не вход
+        self.assertEqual(self.run_login([ok], ""), (0, False))
 
 
 class Device(unittest.TestCase):

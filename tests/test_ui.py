@@ -81,6 +81,72 @@ class Window(unittest.TestCase):
                 storage.EMAIL = old
                 b.wipe_session = wipe
 
+    def test_scan_finds_keep_purchases_and_page(self):
+        """Находка «Найти мои удалённые» добавляется к покупкам и не переключает страницу (ошибка 1.0.1)."""
+        b = self.backend
+        saved = b.purchases, b.avail, b.owned_state.copy()
+        try:
+            b.on_purchases_result({1: "Банк", 2: "Магазин"}, set())
+            b.showPage("apps")
+            b.add_found({3: "Ещё банк"})
+            b.add_found({3: "Ещё банк"})  # повтор не дублирует
+            self.assertEqual(b.page, "apps")
+            self.assertEqual([a["id"] for a in b.purchases], [1, 3, 2])  # по названию
+            self.assertTrue(b.owned_state[3])
+            self.assertEqual(b.mine.rowCount(), 3)
+        finally:
+            b.purchases, b.avail = saved[0], saved[1]
+            b.owned_state.clear()
+            b.owned_state.update(saved[2])
+            b.refresh_mine()
+            b.showPage("home")
+
+    def test_stop_interrupts_running_command(self):
+        """«Остановить» завершает процесс (раньше скачивание продолжалось до конца)."""
+        import threading
+        import time
+        b = self.backend
+        b.stop_flag = False
+        result = {}
+        cmd = [sys.executable, "-c", "import time; print('start', flush=True); time.sleep(60)"]
+        t = threading.Thread(target=lambda: result.update(r=b.stream(cmd)))
+        t0 = time.time()
+        t.start()
+        time.sleep(1)
+        b.on_stop()
+        t.join(timeout=15)
+        self.assertFalse(t.is_alive(), "stream не вернулся после «Остановить»")
+        self.assertLess(time.time() - t0, 15)
+        self.assertNotEqual(result["r"][0], 0)
+        b.stop_flag = False
+
+    def test_pick_compatible_removes_probe_downloads(self):
+        """Подбор версии оставляет в архиве только подошедшую версию, пробные IPA удаляет."""
+        import tempfile
+        import restore_apps as core
+        from restore_gui import tasks
+        b = self.backend
+        b.stop_flag = False
+        with tempfile.TemporaryDirectory() as d:
+            old, core.OUT_DIR = core.OUT_DIR, Path(d)
+            saved = b.task_download, tasks.ipa_info
+
+            def download(ipatool, app_id, name, purchase, version=None, fallback=False):
+                p = Path(d) / f"x_{app_id}_v{version}.ipa"
+                p.write_bytes(b"ipa")
+                return p
+
+            # версии 3 и новее требуют iOS 18, старые — iOS 15; на телефоне iOS 16
+            b.task_download = download
+            tasks.ipa_info = lambda p: {"MinimumOSVersion": "18.0" if int(p.stem.split("_v")[1]) >= 3 else "15.0"}
+            try:
+                best = b.pick_compatible("ipatool", 1, "x", ["5", "4", "3", "2", "1"], "16.0")
+                self.assertEqual(best.name, "x_1_v2.ipa")
+                self.assertEqual(sorted(p.name for p in Path(d).glob("*.ipa")), ["x_1_v2.ipa"])
+            finally:
+                core.OUT_DIR = old
+                b.task_download, tasks.ipa_info = saved
+
     def test_login_asks_2fa_even_when_ipatool_exits_0(self):
         """ipatool 2.7: «2FA code is required…» с кодом возврата 0 — это не вход, нужно спросить код (ошибка 1.0.0)."""
         from restore_gui import tasks
