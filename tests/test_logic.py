@@ -2,6 +2,8 @@
 import contextlib
 import io
 import json
+import os
+import shutil
 import sys
 import tempfile
 import time
@@ -184,6 +186,35 @@ class Processes(unittest.TestCase):
                 apple.forget(p)
                 if p.poll() is None:
                     p.kill()
+
+    def test_clear_stale_locks(self):
+        with tempfile.TemporaryDirectory() as d:
+            old, core.IPATOOL_HOME = core.IPATOOL_HOME, Path(d)
+            try:
+                session = Path(d) / ".ipatool"
+                session.mkdir()
+                (session / "cookies.lock").write_text("", encoding="utf-8")
+                (session / "cookies").write_text("{}", encoding="utf-8")
+                apple.clear_stale_locks()
+                self.assertEqual([p.name for p in session.iterdir()], ["cookies"])
+                apple.clear_stale_locks()  # папки или lock-файлов нет — не ошибка
+            finally:
+                core.IPATOOL_HOME = old
+
+
+@unittest.skipUnless(sys.platform.startswith("win"), "поиск программ в текущей папке есть только на Windows")
+class ToolLookup(unittest.TestCase):
+    def test_planted_exe_in_current_folder_is_not_used(self):
+        """ipatool.exe в текущей папке не должен находиться раньше PATH: он получил бы пароль Apple ID."""
+        self.assertEqual(os.environ.get("NoDefaultCurrentDirectoryInExePath"), "1")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "ipatool_planted_test.exe").write_bytes(b"")
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                self.assertIsNone(shutil.which("ipatool_planted_test"))
+            finally:
+                os.chdir(old)
 
 
 def lookup_answer(body):

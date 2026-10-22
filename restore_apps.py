@@ -35,6 +35,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+if sys.platform.startswith("win"):
+    import os
+    # иначе Windows (и shutil.which) ищет ipatool.exe сначала в текущей папке, и подложенный там файл
+    # получил бы пароль Apple ID; влияет и на поиск программ дочерними процессами
+    os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
+
 FROZEN = getattr(sys, "frozen", False)  # собран PyInstaller'ом
 BUNDLE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))  # встроенные ресурсы
 HERE = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
