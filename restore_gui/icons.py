@@ -44,6 +44,7 @@ class IconLoader:
         now = time.time()
         todo = [i for i in ids if not cached(i) and now - missing.get(str(i), 0) > RETRY_AFTER]
         urls = {}
+        unchecked = set()  # запрос не удался хотя бы в одной стране: «нет иконки» про них знать нельзя
         for country in COUNTRIES:
             left = [i for i in todo if i not in urls]
             for k in range(0, len(left), 100):
@@ -55,13 +56,16 @@ class IconLoader:
                     with urllib.request.urlopen(url, timeout=20) as r:
                         data = json.load(r)
                 except (OSError, ValueError):
+                    unchecked.update(part)
                     continue
                 for x in data.get("results", []):
                     art = x.get("artworkUrl100")
                     if art and x.get("trackId"):
                         urls[int(x["trackId"])] = art.replace("100x100bb", "128x128bb")
+        # «нет иконки на неделю» — только если Apple во всех странах ответил и иконки не дал;
+        # иначе запуск без сети оставлял все приложения без иконок на 7 дней
         for i in todo:
-            if i not in urls:
+            if i not in urls and i not in unchecked:
                 missing[str(i)] = now
         try:
             MISSING.write_text(json.dumps(missing), encoding="utf-8")
