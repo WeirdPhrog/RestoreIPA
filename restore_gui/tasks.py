@@ -17,9 +17,9 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, NO_WINDOW, SESSION_LOST, bundled, clip, explain_error, fetch_available,
-                    in_session_copies, list_versions_cmd, ownership, parse_purchases, parse_versions, run_quiet,
-                    sap_ready, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, NO_WINDOW, SESSION_LOST, bundled, clip, explain_error, fatal_error,
+                    fetch_available, in_session_copies, list_versions_cmd, ownership, parse_purchases,
+                    parse_versions, run_quiet, sap_ready, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 SCAN_WORKERS = 4  # параллельных проверок владения
@@ -481,7 +481,7 @@ class TasksMixin:
                     self.log("Не удалось проверить приложение.")
                     self.hint(out)
                     failed.append(app["name"])
-                    if explain_error(out) and re.search(r"Сессия|Нет связи|блокир", explain_error(out)[0]):
+                    if fatal_error(out):
                         break  # дальше будет то же самое
                 continue
             self.owned_state[app["id"]] = True

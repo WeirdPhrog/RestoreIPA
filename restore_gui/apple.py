@@ -86,27 +86,35 @@ def sap_ready():
         return False
 
 
+# ошибки, после которых следующие запросы к Apple упадут так же (пакетная установка на них прерывается)
+NET_ERROR = (r"no such host|getaddrinfo|dial tcp|i/o timeout|connection (reset|refused)|network is unreachable"
+             r"|unexpected EOF|\": EOF\b")
+ACCOUNT_LOCKED = r"account (is )?(disabled|locked)|has been (disabled|locked)"
+NO_SESSION = r"password token expired|sign.?in required|failed to get account|not logged"
+
 HINTS = (
-    (r"no such host|getaddrinfo|dial tcp|i/o timeout|connection (reset|refused)|network is unreachable|EOF",
+    (NET_ERROR,
      "Нет связи с серверами Apple. Частая причина — DNS «для обхода блокировок» (Comss, GeoHide и т.п.), он "
      "подменяет адреса Apple: верните автоматический DNS в настройках сети. Также мешают записи в файле hosts. "
      "Нажмите «Проверить связь с Apple» слева."),
     (r"x509|certificate|tls: ",
      "Защищённое соединение с Apple перехватывается. Обычно это антивирус с проверкой HTTPS (Касперский, ESET, "
      "Dr.Web) — отключите в нём проверку защищённых соединений или добавьте программу в исключения."),
-    (r"account (is )?(disabled|locked)|has been (disabled|locked)",
+    (ACCOUNT_LOCKED,
      "Apple заблокировал этот Apple ID. Пароль ни при чём: восстановите доступ на iforgot.apple.com."),
-    (r"invalid credentials|bad.?credentials|incorrect|password is incorrect|MZFinance.BadLogin",
+    # «Your Apple ID or password was entered incorrectly.» — но не любое «incorrect» в выводе
+    (r"invalid credentials|bad.?credentials|(apple id|password|credentials)[^\n]{0,40}incorrect|MZFinance.BadLogin",
      "Неверный Apple ID или пароль. Если окно с кодом на iPhone не появилось — почти наверняка ошибка в пароле."),
-    (r"429|rate.?limit|too many",
+    (r"\b429\b|rate.?limit|too many",  # \b: не цифры внутри App ID или размера файла
      "Apple временно ограничил попытки. НЕ повторяйте вход подряд: подождите около часа и попробуйте один раз."),
     (r"license is required|license.*not found",
      "Этого приложения нет в истории покупок вашего Apple ID — Apple его не отдаст. Войдите под тем Apple ID, "
      "под которым его когда-то скачивали."),
-    (r"password token expired|sign.?in required|failed to get account|not logged",
+    (NO_SESSION,
      "Сессия входа истекла или вход не выполнен. Нажмите «Войти»."),
     (r"mac address", "ipatool не нашёл сетевой адаптер (нужен для подписи запросов). Включите сетевой адаптер."),
-    (r"DeviceLocked|PasswordProtected|locked",
+    # не просто «locked»: иначе «account is locked» даёт ещё и совет разблокировать iPhone
+    (r"DeviceLocked|PasswordProtected|(device|phone) (is )?locked",
      "iPhone заблокирован. Разблокируйте его и держите экран включённым во время установки."),
     (r"No ?Device|device not found|not connected|ConnectionFailed|usbmux",
      "iPhone не найден. Подключите кабелем, нажмите «Доверять» и введите код-пароль. На Windows нужен iTunes "
@@ -122,6 +130,11 @@ def explain_error(text):
         if re.search(pat, text or "", re.I) and hint not in seen:
             seen.append(hint)
     return seen
+
+
+def fatal_error(text):
+    """Нет связи, нет сессии или аккаунт заблокирован: следующие приложения пакета упадут так же."""
+    return any(re.search(p, text or "", re.I) for p in (NET_ERROR, ACCOUNT_LOCKED, NO_SESSION))
 
 
 def bundled(name):
