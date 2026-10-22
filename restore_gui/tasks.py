@@ -451,30 +451,50 @@ class TasksMixin:
         """Двоичный поиск новейшей подходящей версии: старые версии требуют более старую iOS.
 
         versions — ID по убыванию (новые первыми); versions[0] уже известна как неподходящая.
-        Каждая проба — скачивание IPA (попадает в архив и повторно не качается).
+        Каждая проба — скачивание IPA. Подошедшая версия остаётся в архиве, а скачанные только для пробы
+        удаляются в конце: иначе подбор молча оставлял до 7 полных IPA (это легко несколько ГБ).
         """
         lo, hi, best = 1, len(versions) - 1, None
         tries = 0
-        while lo <= hi and tries < budget and not self.stop_flag:
-            mid = (lo + hi) // 2
-            tries += 1
-            self.log(f"Подбор версии для iOS {ios}: проверяю вариант {mid + 1} из {len(versions)}…")
-            path = self.task_download(ipatool, app_id, name, False, versions[mid])
-            if not path:
-                return None
-            plist = ipa_info(path)
-            need, shown = plist.get("MinimumOSVersion"), plist.get("CFBundleShortVersionString")
-            if need and vtuple(need) > vtuple(ios):
-                lo = mid + 1
-            else:
-                best = (path, shown, need)
-                hi = mid - 1
+        before = set(storage.archived(app_id))
+        probes = []
+        try:
+            while lo <= hi and tries < budget and not self.stop_flag:
+                mid = (lo + hi) // 2
+                tries += 1
+                self.log(f"Подбор версии для iOS {ios}: проверяю вариант {mid + 1} из {len(versions)}…")
+                path = self.task_download(ipatool, app_id, name, False, versions[mid])
+                if not path:
+                    return None
+                probes.append(path)
+                plist = ipa_info(path)
+                need, shown = plist.get("MinimumOSVersion"), plist.get("CFBundleShortVersionString")
+                if need and vtuple(need) > vtuple(ios):
+                    lo = mid + 1
+                else:
+                    best = (path, shown, need)
+                    hi = mid - 1
+        finally:
+            self.drop_probes([p for p in probes if p not in before and (not best or p != best[0])])
         if not best:
             self.log("Не нашлось версии этого приложения для вашей iOS: даже старые требуют iOS новее, "
                      "или Apple отдал не все версии.")
             return None
         self.log(f"Подходит версия {best[1] or '?'} (нужна iOS {best[2] or '?'}).")
         return best[0]
+
+    def drop_probes(self, paths):
+        """Удалить IPA, скачанные только для подбора версии."""
+        freed = 0
+        for p in paths:
+            try:
+                size = p.stat().st_size
+                p.unlink()
+                freed += size
+            except OSError:
+                pass
+        if freed:
+            self.log(f"Удалены пробные версии, скачанные для подбора: {freed // 1048576} МБ.")
 
     def task_batch(self, ipatool, installer, apps):
         done, skipped, failed = [], [], []
