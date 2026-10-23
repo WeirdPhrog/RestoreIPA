@@ -25,12 +25,22 @@ def create(app, background=True, visible=True):
     return engine, backend
 
 
+def qt_environment():
+    """Настройки Qt, которые читаются при создании окна, — до QApplication. Заданные снаружи не трогаем."""
+    os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")  # стиль Windows не даёт перекрашивать поля и полосы
+    # Кадры — без flip-модели Direct3D 11 (рисует по-прежнему видеокарта). С flip-моделью драйвер NVIDIA
+    # включает G-SYNC в оконном режиме и для окна программы: монитор подстраивает частоту под каждую анимацию
+    # интерфейса (наведение, нажатие, появление иконок), и экран мерцает. Без flip VRR не включается — это
+    # проверено чтением состояния драйвера (NvAPI_Disp_GetVRRInfo); плавность прокрутки та же.
+    os.environ.setdefault("QT_D3D_NO_FLIP", "1")
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--pmd":  # режим установщика (pymobiledevice3)
         from pymobiledevice3.__main__ import main as pmd_main
         sys.argv = ["pymobiledevice3"] + sys.argv[2:]
         sys.exit(int(pmd_main()))
-    os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")  # стиль Windows не даёт перекрашивать поля и полосы
+    qt_environment()
     if "--check-ui" in sys.argv:  # проверка сборки: загрузить интерфейс без показа и выйти
         report = sys.argv[sys.argv.index("--check-ui") + 1]
         try:
