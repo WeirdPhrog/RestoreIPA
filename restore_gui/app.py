@@ -54,11 +54,35 @@ def main():
     ico = bundled("icon.ico")
     if ico:
         app.setWindowIcon(QIcon(ico))
+    lock = single_instance()
+    if lock is None:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(None, "Restore", "Restore уже запущена — её окно открыто или ещё запускается.")
+        sys.exit(0)
     engine, backend = create(app)
     if not engine.rootObjects():
         sys.exit("Не удалось загрузить интерфейс (qml/Main.qml).")
     app.aboutToQuit.connect(backend.shutdown)
-    sys.exit(app.exec())
+    code = app.exec()
+    lock.unlock()
+    sys.exit(code)
+
+
+def single_instance():
+    """Замок «программа уже запущена» (QLockFile) или None, если его держит другой экземпляр.
+
+    Второй экземпляр при запуске стёр бы сессию первого (уборка после прошлого запуска), а exe одним файлом
+    распаковывается несколько секунд — двойной клик легко запускает два. Замок упавшего процесса QLockFile
+    распознаёт по PID и снимает сам.
+    """
+    from PySide6.QtCore import QLockFile
+
+    import restore_apps as core
+
+    core.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(core.DATA_DIR / "restore.lock"))
+    lock.setStaleLockTime(0)  # программа держит замок часами: по возрасту он не устаревает, только по PID
+    return lock if lock.tryLock(0) else None
 
 
 def check_ui(report):
