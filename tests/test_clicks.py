@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox  # noqa: E402,F401 — до restore_apps: тесты не трогают настоящие данные программы
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtQuick import QQuickWindow  # noqa: E402 — с этим импортом окно приходит как QQuickWindow

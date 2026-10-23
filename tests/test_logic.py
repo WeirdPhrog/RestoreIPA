@@ -14,6 +14,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox  # noqa: E402,F401 — до restore_apps: тесты не трогают настоящие данные программы
 
 import restore_apps as core  # noqa: E402
 from restore_gui import apple, device, icons, storage  # noqa: E402
