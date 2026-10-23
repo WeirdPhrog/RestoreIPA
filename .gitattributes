@@ -1,0 +1,4 @@
+# Переводы строк в репозитории — LF; на Windows Git отдаёт файлы с CRLF (core.autocrlf)
+* text=auto
+*.png binary
+*.ico binary
