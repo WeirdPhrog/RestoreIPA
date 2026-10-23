@@ -343,5 +343,46 @@ class Storage(unittest.TestCase):
         self.assertFalse(hasattr(storage, "save_email"), "email больше не должен записываться на диск")
 
 
+def load_release_tool():
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "tools" / "release.py"
+    spec = importlib.util.spec_from_file_location("release_tool", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Release(unittest.TestCase):
+    """Выпуск по тегу (.github/workflows/release.yml) сверяет тег с версией и берёт описание из CHANGELOG.md."""
+
+    def setUp(self):
+        self.rel = load_release_tool()
+
+    def test_version_is_semver_and_matches_module(self):
+        self.assertRegex(self.rel.version(), r"^\d+\.\d+\.\d+$")
+        self.assertEqual(self.rel.version(), core.__version__)
+
+    def test_changelog_has_current_version(self):
+        notes = self.rel.notes(core.__version__)
+        self.assertTrue(notes, f"в CHANGELOG.md нет раздела «## {core.__version__}» — выпуск по тегу не пройдёт")
+        self.assertNotRegex(notes, r"(?m)^## ", "в описание выпуска попал соседний раздел")
+        self.assertIn("### ", notes)  # подразделы своей версии остаются
+
+    def test_check(self):
+        self.assertEqual(self.rel.check(f"v{core.__version__}"), [])
+        self.assertTrue(self.rel.check("v0.0.1"), "тег не той версии прошёл проверку")
+        self.assertIsNone(self.rel.notes("999.0.0"))
+
+    def test_no_support_button_leftovers(self):
+        """Кнопка «Поддержать разработчика» убрана целиком: ни в коде, ни в сборке."""
+        root = Path(__file__).resolve().parent.parent
+        files = [*root.glob("*.py"), *root.glob("restore_gui/*.py"), *root.glob("restore_gui/qml/*.qml"),
+                 root / "RestoreAppStore.spec", root / "requirements-build.txt"]
+        for f in files:
+            text = f.read_text(encoding="utf-8").lower()
+            for word in ("cloudtips", "supporturl", "segno", "поддержать разработчика"):
+                self.assertFalse(word in text, f"{f.name}: осталось «{word}»")
+
+
 if __name__ == "__main__":
     unittest.main()

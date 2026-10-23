@@ -15,7 +15,7 @@ $IpatoolUrl = "https://github.com/majd/ipatool/releases/download/v2.7.0/ipatool-
 $IpatoolSha = "b729608716908be287c2e6972f9e8cd05f879810ae5d182fc856c9e57cca0dd5"  # ipatool-2.7.0-windows-amd64.tar.gz.sha256sum
 $UnicornUrl = "https://github.com/unicorn-engine/unicorn/releases/download/2.1.4/windows-mingw64-shared.7z"
 $UnicornSha = "0960f938e66fa12c448742bddd2a03aa88abeeb2b3cda7156493a2da86228d3a"  # digest ассета в релизе 2.1.4
-$UnicornDllSha = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # = UNICORN_SHA256 в restore_apps_gui.py
+$UnicornDllSha = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # = UNICORN_SHA256 в restore_gui/apple.py
 $UnicornLicenseUrl = "https://raw.githubusercontent.com/unicorn-engine/unicorn/2.1.4/COPYING"
 
 function Assert-Hash($path, $sha) {
@@ -41,8 +41,14 @@ function Invoke-Native {
 $py = "build\venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
     Write-Host "Создаю build\venv (Python 3.12)"
-    Invoke-Native py -V:3.12 -m venv build\venv
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        Invoke-Native py -V:3.12 -m venv build\venv
+    } else {
+        Invoke-Native python -m venv build\venv  # без py launcher (GitHub Actions: python из setup-python)
+    }
 }
+& $py -c "import sys; sys.exit(sys.version_info[:2] != (3, 12))"
+if ($LASTEXITCODE) { throw "build\venv не на Python 3.12 — удалите build\venv и запустите сборку снова" }
 Invoke-Native $py -m pip install --disable-pip-version-check -q -r requirements-build.txt
 
 # --- внешние компоненты ---

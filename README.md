@@ -13,7 +13,13 @@
   <a href="../../releases/latest"><b>Скачать установщик</b></a> ·
   <a href="#как-пользоваться">Как пользоваться</a> ·
   <a href="#частые-проблемы">Частые проблемы</a> ·
-  <a href="#безопасность-и-данные">Безопасность</a>
+  <a href="#безопасность-и-данные">Безопасность</a> ·
+  <a href="CHANGELOG.md">Изменения</a>
+</p>
+
+<p align="center">
+  <a href="../../actions/workflows/tests.yml"><img src="https://github.com/WeirdPhrog/RestoreIPA/actions/workflows/tests.yml/badge.svg" alt="Тесты"></a>
+  <a href="../../actions/workflows/release.yml"><img src="https://github.com/WeirdPhrog/RestoreIPA/actions/workflows/release.yml/badge.svg" alt="Выпуск"></a>
 </p>
 
 ![Главный экран](docs/screenshots/home.png)
@@ -117,11 +123,13 @@ python restore_apps.py restore 492224193
 python restore_apps.py logout
 ```
 
-Тесты логики (без сети, Apple ID и iPhone):
+Тесты (без сети, Apple ID и iPhone; настоящие данные программы в `%LOCALAPPDATA%\Restore` не трогают):
 
 ```bash
-py -V:3.12 -m unittest discover tests
+py -V:3.12 -m unittest discover -s tests
 ```
+
+На GitHub те же тесты идут на Windows при каждом пуше и в пулл-реквестах — workflow «Тесты» (`.github/workflows/tests.yml`).
 
 ## Устройство кода
 
@@ -137,7 +145,9 @@ py -V:3.12 -m unittest discover tests
 | `restore_gui/catalog.py` | категории, семьи копий, поиск — без интерфейса |
 | `restore_gui/apple.py` | ipatool и сервера Apple: разбор ответов, объяснения ошибок |
 | `restore_gui/device.py`, `storage.py`, `theme.py` | iPhone и .ipa; служебные файлы; палитра |
-| `tests/` | тесты логики |
+| `tests/` | тесты: логика, окно, нажатия мышью |
+| `build.ps1`, `RestoreAppStore.spec`, `installer/` | сборка exe (PyInstaller) и установщика (Inno Setup) |
+| `tools/release.py`, `CHANGELOG.md`, `.github/workflows/` | версия, описание выпусков, тесты и выпуск на GitHub |
 
 ## Сборка
 
@@ -153,7 +163,24 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 Из Qt в сборку попадает только то, что нужно интерфейсу (список исключений — `DROP` в `RestoreAppStore.spec`). После сборки оба exe запускаются с ключом `--check-ui`: интерфейс загружается без показа окна, и если из Qt вырезано что-то нужное, сборка останавливается.
 
-Версия программы задаётся в `restore_apps.py` (`__version__`).
+## Выпуск версии
+
+Версии — по [SemVer](https://semver.org/lang/ru/): `X.Y.Z`. Номер один на весь проект — `__version__` в `restore_apps.py`, его же показывают окно программы и свойства exe.
+
+1. Поднимите `__version__` в `restore_apps.py` и добавьте в [CHANGELOG.md](CHANGELOG.md) раздел `## X.Y.Z — дата` с описанием изменений.
+2. Закоммитьте, поставьте тег и отправьте его:
+
+   ```bash
+   git tag vX.Y.Z
+   ```
+
+   ```bash
+   git push origin main vX.Y.Z
+   ```
+
+3. Workflow «Выпуск» (`.github/workflows/release.yml`) проверит, что тег совпадает с `__version__` и в `CHANGELOG.md` есть раздел этой версии, прогонит тесты, соберёт `RestoreAppStore.exe`, установщик и `SHA256SUMS.txt` через `build.ps1` и опубликует релиз с описанием из `CHANGELOG.md`. Если что-то не сходится или тесты падают, релиза не будет.
+
+Пробная сборка без релиза: Actions → «Выпуск» → Run workflow. Файлы появятся артефактом прогона.
 
 ## Лицензия
 

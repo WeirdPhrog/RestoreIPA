@@ -47,7 +47,7 @@ HERE = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resol
 _CSV = "removed_ru_appstore_app_ids.csv"
 # CSV рядом с программой имеет приоритет над встроенным: его можно править
 CATALOG = HERE / _CSV if (HERE / _CSV).exists() else BUNDLE / _CSV
-__version__ = "1.0.1"
+__version__ = "1.1.0"  # X.Y.Z; выпуск — тег vX.Y.Z и раздел в CHANGELOG.md (см. tools/release.py)
 APP_NAME = "Restore"
 
 

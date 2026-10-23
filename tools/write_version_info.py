@@ -6,8 +6,10 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-version = re.search(r'__version__\s*=\s*"([^"]+)"', (ROOT / "restore_apps.py").read_text(encoding="utf-8")).group(1)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release import version as read_version  # noqa: E402 — одно место, где читается версия
+
+version = read_version()
 nums = (tuple(int(x) for x in re.findall(r"\d+", version)) + (0, 0, 0, 0))[:4]
 
 TEMPLATE = f"""VSVersionInfo(

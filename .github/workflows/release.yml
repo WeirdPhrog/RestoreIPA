@@ -1,0 +1,77 @@
+# Выпуск версии: тег vX.Y.Z -> тесты, exe и установщик (build.ps1) -> релиз на GitHub с этими файлами,
+# SHA256SUMS.txt и описанием из раздела «## X.Y.Z» в CHANGELOG.md. Тег должен совпадать с restore_apps.__version__.
+# Запуск вручную (Actions -> Выпуск -> Run workflow) — пробная сборка: те же файлы артефактом прогона, без релиза.
+name: Выпуск
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025  # в образе есть Inno Setup 6 и Python 3.12
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - name: Тег совпадает с версией, в CHANGELOG.md есть раздел
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python tools/release.py check "$env:TAG"
+      - name: Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") -and
+              -not (Test-Path "$env:ProgramFiles\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+      - name: Сборка — тесты, exe, установщик
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: restore
+          path: |
+            dist/RestoreAppStore.exe
+            dist/RestoreSetup-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # создать релиз и приложить файлы
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: restore
+          path: dist
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ver="${TAG#v}"
+          python3 tools/release.py notes "$ver" > notes.md
+          gh release create "$TAG" dist/RestoreAppStore.exe dist/RestoreSetup-*.exe dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --title "Restore $ver" --notes-file notes.md --verify-tag
