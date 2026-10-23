@@ -76,12 +76,99 @@ class Window(unittest.TestCase):
                     storage.EMAIL.write_text("someone@example.com", encoding="utf-8")
                     b.loggedIn, b.account = True, "someone@example.com"
                     action()
+                    self.wait_idle()  # «Выйти» стирает сессию в фоне
                     self.assertFalse(storage.EMAIL.exists(), f"{action.__name__} не стёр email")
                     if action == b.logout:
                         self.assertEqual(b.account, "", "после «Выйти» email остался на экране")
             finally:
                 storage.EMAIL = old
                 b.wipe_session = wipe
+                self.reopen()
+
+    def wait_idle(self, seconds=10):
+        import time
+        end = time.time() + seconds
+        while self.backend.busy and time.time() < end:
+            self.qapp.processEvents()
+            time.sleep(0.01)
+        self.assertFalse(self.backend.busy, "фоновая операция не закончилась")
+
+    def reopen(self):
+        """После shutdown() в тесте: окно и процессы снова доступны следующим тестам."""
+        from restore_gui import apple
+        apple._CLOSED = False
+        self.backend.stop_flag = False
+
+    def test_logout_forgets_account_data(self):
+        """После «Выйти» не остаётся покупок, отметок и выбора прежнего Apple ID, панель приложения закрыта."""
+        b = self.backend
+        wipe = b.wipe_session
+        calls = []
+        b.wipe_session = lambda revoke=True: calls.append(1) or False
+        try:
+            b.on_purchases_result({1: "Банк A", 2: "Магазин A"}, set())
+            b.toggleSelected("mine", 0)
+            b.open_detail(b.mine.items[0])
+            b.loggedIn = True
+            b.logout()
+            self.assertEqual((b.purchases, b.avail, b.selected, b.owned_state), ([], None, {}, {}))
+            self.assertEqual(b.mine.rowCount(), 0)
+            self.assertFalse(b.detailOpen)
+            self.assertFalse(b.detail["alive"], "проверки панели продолжили бы идти по стираемой сессии")
+            self.wait_idle()
+            self.assertEqual(calls, [1], "сессия не стёрта")
+            b.add_found({3: "Найдено у B"})  # следующий аккаунт видит только своё
+            self.assertEqual([a["name"] for a in b.purchases], ["Найдено у B"])
+        finally:
+            b.wipe_session = wipe
+            b.purchases, b.avail = [], None
+            b.owned_state.clear()
+            b.clear_selection()
+            b.refresh_mine()
+            b.showPage("home")
+
+    def test_stop_while_waiting_for_session(self):
+        """«Остановить», пока команда ждёт очереди к сессии (её держит панель приложения), — команда не запускается."""
+        import tempfile
+        import threading
+        import time
+        b = self.backend
+        b.stop_flag = False
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "ran"
+            # «ipatool» по имени: is_ipatool смотрит на имя файла, а запустится python с маркером
+            fake = Path(d) / "ipatool.cmd"
+            fake.write_text(f'@"{sys.executable}" -c "open(r\'{marker}\', \'w\').close()"\n', encoding="utf-8")
+            results = {}
+            b.dlock.acquire()  # сессию держит «панель приложения»
+            try:
+                for name, call in (("stream", lambda: b.stream([str(fake)])),
+                                   ("dq", lambda: b.dq([str(fake)], tag="task"))):
+                    b.stop_flag = False
+                    t = threading.Thread(target=lambda n=name, c=call: results.update({n: c()}))
+                    t.start()
+                    time.sleep(0.5)
+                    b.on_stop()
+                    t.join(timeout=5)
+                    self.assertFalse(t.is_alive(), f"{name}: «Остановить» не прервал ожидание сессии")
+                    self.assertNotEqual(results[name][0], 0)
+            finally:
+                b.dlock.release()
+                b.stop_flag = False
+            time.sleep(0.5)
+            self.assertFalse(marker.exists(), "команда запустилась после «Остановить»")
+
+    def test_single_instance(self):
+        """Второй экземпляр не получает замок: иначе он стёр бы сессию первого."""
+        first = gui.single_instance()
+        self.assertIsNotNone(first)
+        try:
+            self.assertIsNone(gui.single_instance())
+        finally:
+            first.unlock()
+        second = gui.single_instance()
+        self.assertIsNotNone(second, "после выхода первого замок не освободился")
+        second.unlock()
 
     def test_scan_finds_keep_purchases_and_page(self):
         """Находка «Найти мои удалённые» добавляется к покупкам и не переключает страницу (ошибка 1.0.1)."""
@@ -140,7 +227,7 @@ class Window(unittest.TestCase):
         """Подбор версии оставляет в архиве только подошедшую версию, пробные IPA удаляет."""
         import tempfile
         import restore_apps as core
-        from restore_gui import tasks
+        from restore_gui import storage, tasks
         b = self.backend
         b.stop_flag = False
         with tempfile.TemporaryDirectory() as d:
@@ -148,20 +235,33 @@ class Window(unittest.TestCase):
             saved = b.task_download, tasks.ipa_info
 
             def download(ipatool, app_id, name, purchase, version=None, fallback=False):
+                if version in fail:
+                    return None
                 p = Path(d) / f"x_{app_id}_v{version}.ipa"
                 p.write_bytes(b"ipa")
+                storage.record_download(app_id, version)  # как настоящий task_download
                 return p
 
-            # версии 3 и новее требуют iOS 18, старые — iOS 15; на телефоне iOS 16
+            # версии 3 и новее требуют iOS 18, старые — iOS 15
             b.task_download = download
             tasks.ipa_info = lambda p: {"MinimumOSVersion": "18.0" if int(p.stem.split("_v")[1]) >= 3 else "15.0"}
+            fail = set()
             try:
+                # на телефоне iOS 16: пробуются 3 (не подходит) и 2 (подходит); 3 удаляется вместе с записью в истории
                 best = b.pick_compatible("ipatool", 1, "x", ["5", "4", "3", "2", "1"], "16.0")
                 self.assertEqual(best.name, "x_1_v2.ipa")
                 self.assertEqual(sorted(p.name for p in Path(d).glob("*.ipa")), ["x_1_v2.ipa"])
+                self.assertEqual(storage.load_history().get("1"), ["2"], "удалённая проба осталась в истории")
+                # iOS 18: 3 подходит, следующая проба (4) не скачалась — берём 3, а не отменяем установку
+                fail = {"4"}
+                best = b.pick_compatible("ipatool", 1, "x", ["5", "4", "3", "2", "1"], "18.0")
+                self.assertIsNotNone(best, "сбой сети на пробе выбросил уже найденную подходящую версию")
+                self.assertEqual(best.name, "x_1_v3.ipa")
             finally:
                 core.OUT_DIR = old
                 b.task_download, tasks.ipa_info = saved
+                storage.forget_download(1, "2")
+                storage.forget_download(1, "3")
 
     def test_login_asks_2fa_even_when_ipatool_exits_0(self):
         """ipatool 2.7: «2FA code is required…» с кодом возврата 0 — это не вход, нужно спросить код (ошибка 1.0.0)."""

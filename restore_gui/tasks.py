@@ -253,18 +253,32 @@ class TasksMixin:
         """Завершить сессию Apple ID: `ipatool auth revoke` и удалить папку сессии ~/.ipatool.
 
         Возвращает True, если сессия была. Пароль и email Apple ID программа на диске не хранит.
+        Под self.dlock, чтобы ни одна команда не шла по стираемой сессии; если за 10 с её не отпустили
+        (зависший ipatool), стираем всё равно — сессия на диске хуже.
         """
-        folder = core.IPATOOL_HOME / ".ipatool"
-        existed = folder.exists() and any(folder.iterdir())
-        ipatool = self.find_tool("ipatool", "", ask=False)
-        if revoke and existed and ipatool:
-            run_quiet([ipatool, *core.keychain_args(), "auth", "revoke"], timeout=15)
-        shutil.rmtree(folder, ignore_errors=True)
-        # копии сессии для параллельных запросов (apple.in_session_copies), в т.ч. оставшиеся после сбоя
-        for d in Path(tempfile.gettempdir()).glob("restore_scan_*"):
-            existed = existed or (d / "w0" / ".ipatool").exists()
-            shutil.rmtree(d, ignore_errors=True)
-        return existed
+        got = self.dlock.acquire(timeout=10)
+        try:
+            folder = core.IPATOOL_HOME / ".ipatool"
+            existed = folder.exists() and any(folder.iterdir())
+            ipatool = self.find_tool("ipatool", "", ask=False)
+            if revoke and existed and ipatool:
+                clear_stale_locks()  # от только что завершённых процессов: иначе revoke может не пройти
+                run_quiet([ipatool, *core.keychain_args(), "auth", "revoke"], timeout=15, tag="wipe")
+            shutil.rmtree(folder, ignore_errors=True)
+            # копии сессии для параллельных запросов (apple.in_session_copies), в т.ч. оставшиеся после сбоя
+            for d in Path(tempfile.gettempdir()).glob("restore_scan_*"):
+                existed = existed or (d / "w0" / ".ipatool").exists()
+                shutil.rmtree(d, ignore_errors=True)
+            return existed
+        finally:
+            if got:
+                self.dlock.release()
+
+    def task_logout(self):
+        """Выход: сессию стираем в фоне — `ipatool auth revoke` идёт секунды, окно не должно замирать."""
+        kill_procs("")  # проверки панели приложения: их копии сессии стираются вместе с ней
+        self.wipe_session()
+        self.log("Вы вышли из Apple ID, сессия и email удалены с компьютера.")
 
     def task_purchases(self, ipatool, country="ru"):
         acc, total, first_json, failed = {}, None, "", False

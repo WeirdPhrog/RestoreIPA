@@ -247,6 +247,14 @@ def kill_procs(tag=None):
             pass  # уже завершился
 
 
+def close_procs():
+    """При закрытии программы: завершить все процессы и не запускать новых (кроме tag="wipe")."""
+    global _CLOSED
+    with _PROCS_LOCK:
+        _CLOSED = True
+    kill_procs()
+
+
 def clear_stale_locks():
     """Удалить *.lock в основной сессии. Звать, только когда в ней точно не работает ipatool (под dlock):
     lock-файлы остаются от убитых процессов — после «Остановить» или аварийного завершения."""
@@ -259,9 +267,12 @@ def clear_stale_locks():
 
 def run_quiet(cmd, timeout=90, env=None, tag=""):
     """Запуск без построчного журнала: (код возврата, весь вывод без цветовых кодов)."""
-    p = popen(cmd, tag=tag, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-              encoding="utf-8", errors="replace",
-              env=env if env is not None else (core.ipatool_env() if core.is_ipatool(cmd) else None))
+    try:
+        p = popen(cmd, tag=tag, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                  encoding="utf-8", errors="replace",
+                  env=env if env is not None else (core.ipatool_env() if core.is_ipatool(cmd) else None))
+    except ProcsClosed:
+        return 1, "программа закрывается"
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

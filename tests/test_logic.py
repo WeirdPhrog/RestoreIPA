@@ -189,6 +189,20 @@ class Processes(unittest.TestCase):
                 if p.poll() is None:
                     p.kill()
 
+    def test_close_procs_blocks_new_processes(self):
+        """После закрытия окна новые процессы не запускаются — кроме уборки сессии (tag="wipe")."""
+        p = apple.popen(SLEEPER)
+        try:
+            apple.close_procs()
+            p.wait(timeout=10)
+            self.assertRaises(apple.ProcsClosed, apple.popen, SLEEPER)
+            self.assertEqual(apple.run_quiet(SLEEPER)[0], 1)
+            rc, out = apple.run_quiet([sys.executable, "-c", "print('wipe')"], tag="wipe")
+            self.assertEqual((rc, out.strip()), (0, "wipe"))
+        finally:
+            apple._CLOSED = False
+            apple.forget(p)
+
     def test_clear_stale_locks(self):
         with tempfile.TemporaryDirectory() as d:
             old, core.IPATOOL_HOME = core.IPATOOL_HOME, Path(d)
@@ -307,6 +321,12 @@ class Storage(unittest.TestCase):
                 self.assertEqual(storage.load_history(), {"5": ["100"]})
                 storage.save_meta(5, {"100": ("1.0", "2024-01-01")})
                 self.assertEqual(storage.load_meta(), {"5": {"100": ["1.0", "2024-01-01"]}})
+                storage.record_download(5, "200")
+                storage.forget_download(5, "100")
+                storage.forget_download(5, "999")  # такой нет — не ошибка
+                self.assertEqual(storage.load_history(), {"5": ["200"]})
+                storage.forget_download(5, "200")
+                self.assertEqual(storage.load_history(), {})
             finally:
                 storage.HISTORY, storage.META_CACHE = old
 

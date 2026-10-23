@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 import restore_apps as core
 
 from . import storage, theme
-from .apple import kill_procs
+from .apple import close_procs
 from .catalog import Catalog, parse_app_ref, plural, split_disguise
 from .detail import DetailMixin
 from .icons import IconLoader, cached
@@ -431,14 +431,17 @@ class Backend(QObject, TasksMixin, DetailMixin):
         if self._busy:
             self.show_notice("Подождите", "Сначала дождитесь окончания текущей операции или нажмите «Остановить».")
             return
-        kill_procs()  # проверки в панели приложения: они не считаются операцией и иначе шли бы по стираемой сессии
-        self.wipe_session()
+        # всё, что знали об аккаунте, забываем сразу: на общем компьютере следующий человек не должен видеть
+        # чужие покупки, а его находки — смешиваться с ними
+        self.close_detail()  # её проверки больше не повторяются (d["alive"] = False)
         storage.forget_email()
+        self.purchases, self.avail = [], None
         self.owned_state.clear()
+        self.clear_selection()
         self.refresh_list_keep()
         self.on_login_result(False, "")
-        self.log("Вы вышли из Apple ID, сессия и email удалены с компьютера.")
         self.showPage("home")
+        self.start("Выход из Apple ID", self.task_logout)  # сессию — в фоне
 
     def on_purchases_result(self, acc, avail):
         self.purchases = [{"id": i, "name": n} for i, n in sorted(acc.items(), key=lambda kv: kv[1].casefold())]
@@ -551,6 +554,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
         self.icons.stop()
         if self.detail is not None:
             self.detail["alive"] = False
-        kill_procs()  # иначе ipatool и установщик продолжили бы работать без окна
+        close_procs()  # иначе ipatool и установщик продолжили бы работать без окна; новых не запускаем
         self.wipe_session()
         storage.forget_email()
