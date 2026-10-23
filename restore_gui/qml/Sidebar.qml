@@ -1,5 +1,6 @@
 // Боковая панель: логотип, разделы, вход в Apple ID и ссылки.
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 
 Rectangle {
@@ -60,10 +61,24 @@ Rectangle {
             onClicked: side.supportRequested()
         }
         Text {
-            Layout.fillWidth: true; Layout.leftMargin: 6; Layout.bottomMargin: 8
-            text: backend.loggedIn ? "Apple ID\n" + backend.account : "Вход не выполнен"
+            Layout.fillWidth: true; Layout.leftMargin: 6; Layout.bottomMargin: backend.loggedIn ? 0 : 8
+            text: backend.loggedIn ? "Apple ID" : "Вход не выполнен"
             color: backend.loggedIn ? P.text : P.muted
-            font.family: P.font; font.pixelSize: 12; elide: Text.ElideRight
+            font.family: P.font; font.pixelSize: 12
+        }
+        // email — отдельной строкой: многоточие в Qt работает только у однострочного текста, а «Apple ID\n…»
+        // длинный адрес вылезал за край панели. Середина сжимается (домен виден), целиком — в подсказке
+        Text {
+            id: accountText
+            visible: backend.loggedIn
+            Layout.fillWidth: true; Layout.leftMargin: 6; Layout.bottomMargin: 8
+            text: backend.account
+            textFormat: Text.PlainText; elide: Text.ElideMiddle
+            color: P.text; font.family: P.font; font.pixelSize: 12
+            HoverHandler { id: accountHover }
+            ToolTip.visible: accountHover.hovered && truncated
+            ToolTip.text: backend.account
+            ToolTip.delay: 400
         }
         Btn {
             visible: !backend.loggedIn

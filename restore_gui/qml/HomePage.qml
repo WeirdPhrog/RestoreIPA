@@ -11,6 +11,7 @@ ColumnLayout {
     PageTitle { title: backend.greeting; sub: "Вернём на iPhone приложения, которые пропали из App Store." }
 
     RowLayout {
+        Layout.fillWidth: true
         spacing: 8
         Repeater {
             model: 2
@@ -19,15 +20,29 @@ ColumnLayout {
                 required property int index
                 readonly property bool isDevice: index === 0
                 readonly property string state_: isDevice ? backend.deviceState : (backend.loggedIn ? "ok" : "login")
-                height: 34; radius: 17
-                width: chipText.implicitWidth + 30
+                radius: 17
+                // ширина — по тексту (в RowLayout это Layout.*: обычный width раскладка игнорирует, и плашки
+                // наезжали друг на друга). Если места мало, плашки сжимаются, а текст — с многоточием
+                // и целиком во всплывающей подсказке
+                // запас в 2 px: дробная ширина текста при точном совпадении уже даёт многоточие
+                readonly property real fullWidth: Math.ceil(chipText.implicitWidth) + 32
+                Layout.preferredHeight: 34
+                Layout.preferredWidth: fullWidth
+                Layout.maximumWidth: fullWidth
+                Layout.minimumWidth: 120
+                Layout.fillWidth: true
                 color: chipHover.hovered ? P.cardHover : P.card
                 border.color: state_ === "ok" ? P.okDim : state_ === "trust" ? P.warnDim
                             : state_ === "login" ? P.accentDim : P.border
                 Behavior on color { ColorAnimation { duration: 120 } }
+                ToolTip.visible: chipHover.hovered && chipText.truncated
+                ToolTip.text: chipText.text
+                ToolTip.delay: 400
                 Text {
                     id: chipText
-                    anchors.centerIn: parent
+                    x: 15; width: parent.width - 30
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText; elide: Text.ElideRight
                     font.family: P.font; font.pixelSize: 12
                     color: chip.state_ === "ok" ? P.ok : chip.state_ === "trust" ? P.warn
                          : chip.state_ === "login" ? P.accentText : P.muted
@@ -39,6 +54,7 @@ ColumnLayout {
                 TapHandler { onTapped: chip.isDevice ? home.helpRequested() : backend.openLogin("") }
             }
         }
+        Item { Layout.fillWidth: true }  // плашки — слева, свободное место — справа
     }
 
     Rectangle {
