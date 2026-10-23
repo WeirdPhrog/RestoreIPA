@@ -211,12 +211,22 @@ def fetch_available(ids, country, chunk=100):
 # запущенные ipatool и установщик: {процесс: метка}. Без этого «Остановить» не может прервать скачивание,
 # а после закрытия окна процессы остаются работать (на Windows дочерний процесс не завершается с родителем).
 _PROCS, _PROCS_LOCK = {}, threading.Lock()
+_CLOSED = False  # программа закрывается: новых процессов не запускаем (кроме уборки сессии, tag="wipe")
+
+
+class ProcsClosed(OSError):
+    """Программа закрывается — процесс не запущен."""
 
 
 def popen(cmd, tag="", **kw):
-    """subprocess.Popen с учётом в _PROCS; tag="task" — основная операция (её прерывает «Остановить»)."""
-    p = subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
+    """subprocess.Popen с учётом в _PROCS; tag="task" — основная операция (её прерывает «Остановить»).
+
+    Запуск и учёт — под одной блокировкой: kill_procs не может проскочить между ними, а после close_procs
+    поток, ещё не узнавший о закрытии, не запустит ipatool, переживающий программу."""
     with _PROCS_LOCK:
+        if _CLOSED and tag != "wipe":
+            raise ProcsClosed("программа закрывается")
+        p = subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
         _PROCS[p] = tag
     return p
 

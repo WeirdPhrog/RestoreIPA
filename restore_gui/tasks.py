@@ -18,9 +18,9 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, bundled, clear_stale_locks, clip, explain_error, fatal_error,
-                    fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd, ownership,
-                    parse_purchases, parse_versions, popen, run_quiet, sap_ready, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, ProcsClosed, bundled, clear_stale_locks, clip, explain_error,
+                    fatal_error, fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd,
+                    ownership, parse_purchases, parse_versions, popen, run_quiet, sap_ready, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 SCAN_WORKERS = 4  # параллельных проверок владения
@@ -144,16 +144,21 @@ class TasksMixin:
     def stream(self, cmd, quiet_json=False):
         """Запуск с построчным журналом. ipatool работает с основной сессией — под self.dlock, как и dq:
         иначе панель приложения запустила бы второй ipatool на той же папке во время скачивания."""
-        if self.stop_flag:  # «Остановить» нажали между командами — следующую не начинаем
-            self.log("Остановлено.")
-            return 1, "Остановлено."
-        self.log("$ " + core.masked(cmd))
         ipatool = core.is_ipatool(cmd)
-        with self.dlock if ipatool else contextlib.nullcontext():
+        with self.session_lock(stoppable=True) if ipatool else contextlib.nullcontext(True) as go:
+            # «Остановить» нажали между командами или пока ждали очереди к сессии — команду не начинаем
+            if not go or self.stop_flag:
+                self.log("Остановлено.")
+                return 1, "Остановлено."
+            self.log("$ " + core.masked(cmd))
             if ipatool:
                 clear_stale_locks()
-            p = popen(cmd, tag="task", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                      text=True, encoding="utf-8", errors="replace", env=core.ipatool_env() if ipatool else None)
+            try:
+                p = popen(cmd, tag="task", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                          env=core.ipatool_env() if ipatool else None)
+            except ProcsClosed:
+                return 1, "Программа закрывается."
             lines = []
             try:
                 for line in p.stdout:
@@ -172,10 +177,25 @@ class TasksMixin:
 
     def dq(self, cmd, timeout=90, tag=""):
         """run_quiet через основную сессию ipatool — по одной команде за раз (общая папка сессии).
-        tag="task" — команда основной операции: её прерывает «Остановить»."""
-        with self.dlock:
+        tag="task" — команда основной операции: её прерывает «Остановить», в том числе пока она ждёт очереди."""
+        with self.session_lock(stoppable=tag == "task") as go:
+            if not go:
+                return 1, "Остановлено."
             clear_stale_locks()
             return run_quiet(cmd, timeout=timeout, tag=tag)
+
+    @contextlib.contextmanager
+    def session_lock(self, stoppable):
+        """self.dlock — основная сессия ipatool. Даёт True, если можно работать; False — пока ждали очереди
+        (панель приложения держит сессию до 3 минут), нажали «Остановить» (только при stoppable)."""
+        while not self.dlock.acquire(timeout=0.2):
+            if stoppable and self.stop_flag:
+                yield False
+                return
+        try:
+            yield not (stoppable and self.stop_flag)
+        finally:
+            self.dlock.release()
 
     def hint(self, text):
         hints = explain_error(text)
