@@ -79,10 +79,14 @@ ApplicationWindow {
                     contentItem: Item {
                         clip: true
                         Rectangle {
+                            id: runner
                             width: parent.width * 0.35; height: parent.height; radius: 2; color: P.accent
-                            SequentialAnimation on x {
-                                running: backend.busy; loops: Animation.Infinite
-                                NumberAnimation { from: -50; to: 160; duration: 1100; easing.type: Easing.InOutQuad }
+                            // Animator идёт в потоке отрисовки: полоса движется ровно, даже когда поток окна
+                            // занят (обновление списков, журнал). Иначе кадры шли неровно — на мониторе с
+                            // G-SYNC/FreeSync частота обновления прыгала вслед за ними и экран мерцал.
+                            XAnimator {
+                                target: runner; running: backend.busy; loops: Animation.Infinite
+                                from: -50; to: 160; duration: 1100; easing.type: Easing.InOutQuad
                             }
                         }
                     }

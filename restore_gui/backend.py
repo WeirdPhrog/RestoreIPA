@@ -332,7 +332,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
         return [dict(self.catalog.byid.get(a["id"], {}), **a) for a in base]
 
     def refresh_mine(self):
-        self._mine.set_items(self.my_removed())
+        self._mine.update_items(self.my_removed())  # без сброса: прокрутка «Мои» остаётся на месте
 
     @Slot(bool)
     def setOnlyRemoved(self, on):
@@ -459,7 +459,12 @@ class Backend(QObject, TasksMixin, DetailMixin):
                                 key=lambda a: a["name"].casefold())
         for i in found:
             self.owned_state[i] = True
-        self.refresh_list_keep()
+        # только строки найденных: пересчёт всех ~1400 строк занимал ~8 мс на каждую находку — дольше кадра,
+        # и во время поиска окно теряло кадры (на мониторе с G-SYNC это заметно как мерцание)
+        for m in (self._popular, self._apps):
+            m.refresh_keys(list(found))
+        if self.detail is not None:
+            self.paint_clones(self.detail)
         self.refresh_mine()
 
     # ---------- кнопки ----------

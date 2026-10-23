@@ -99,6 +99,67 @@ class Window(unittest.TestCase):
         apple._CLOSED = False
         self.backend.stop_flag = False
 
+    def test_update_items_keeps_list_instead_of_reset(self):
+        """Добавление, удаление и изменение строк — без сброса модели: сброс прокручивает ListView к началу."""
+        from restore_gui.models import RowsModel
+        m = RowsModel(("id", "name"), key=lambda a: a["id"])
+        log = []
+        m.modelReset.connect(lambda: log.append("reset"))
+        m.rowsInserted.connect(lambda _p, a, z: log.append(("ins", a)))
+        m.rowsRemoved.connect(lambda _p, a, z: log.append(("del", a)))
+        m.dataChanged.connect(lambda a, z: log.append(("chg", a.row())))
+        m.set_items([{"id": 1, "name": "a"}, {"id": 3, "name": "c"}])
+        log.clear()
+        m.update_items([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}, {"id": 3, "name": "c"}])
+        m.update_items([{"id": 2, "name": "b"}, {"id": 3, "name": "C"}])
+        self.assertEqual(log, [("ins", 1), ("del", 0), ("chg", 1)])
+        self.assertEqual([r["name"] for r in m.rows], ["b", "C"])
+        self.assertEqual(m.index_of, {2: 0, 3: 1})
+        log.clear()
+        m.update_items([{"id": 3, "name": "C"}, {"id": 2, "name": "b"}])  # другой порядок — пересборка
+        self.assertEqual(log, ["reset"])
+        self.assertEqual([r["id"] for r in m.rows], [3, 2])
+
+    def test_scan_find_does_not_reset_or_recount_lists(self):
+        """Находка поиска вставляет строку в «Мои» (прокрутка на месте) и не пересчитывает весь каталог."""
+        b = self.backend
+        saved = b.purchases, b.avail, b.owned_state.copy()
+        resets, made = [], []
+        b.mine.modelReset.connect(lambda: resets.append(1))
+        row = b.app_row
+        b._apps.make_row = lambda a: made.append(a["id"]) or row(a)
+        try:
+            b.on_purchases_result({1: "Банк", 2: "Магазин"}, set())
+            resets.clear()
+            made.clear()
+            i = b.catalog.apps[0]["id"]
+            b.add_found({i: b.catalog.apps[0]["name"]})
+            self.assertEqual(resets, [], "список «Мои» пересобран — прокрутка сбросилась бы к началу")
+            self.assertEqual(b.mine.rowCount(), 3)
+            self.assertLessEqual(len(made), 1, "при каждой находке пересчитывался весь каталог")
+            self.assertEqual(b.apps.rows[b.apps.index_of[i]]["status"], "✓ было у вас")
+        finally:
+            b._apps.make_row = row
+            b.mine.modelReset.disconnect()
+            b.purchases, b.avail = saved[0], saved[1]
+            b.owned_state.clear()
+            b.owned_state.update(saved[2])
+            b.refresh_list_keep()
+            b.refresh_mine()
+            b.showPage("home")
+
+    def test_qt_environment_disables_flip_model(self):
+        """Без flip-модели драйвер NVIDIA не включает G-SYNC для окна (мерцание); заданное снаружи не трогаем."""
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QT_D3D_NO_FLIP", None)
+            gui.qt_environment()
+            self.assertEqual(os.environ["QT_D3D_NO_FLIP"], "1")
+            os.environ["QT_D3D_NO_FLIP"] = "0"
+            gui.qt_environment()
+            self.assertEqual(os.environ["QT_D3D_NO_FLIP"], "0")
+
     def test_logout_forgets_account_data(self):
         """После «Выйти» не остаётся покупок, отметок и выбора прежнего Apple ID, панель приложения закрыта."""
         b = self.backend
