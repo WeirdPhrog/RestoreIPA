@@ -12,7 +12,7 @@ Apple отдаст ошибку лицензии — обойти это скр�
 
 Зависимости:
   ipatool          https://github.com/majd/ipatool/releases   (в PATH)
-  pymobiledevice3  pip install pymobiledevice3                (или ideviceinstaller)
+  pymobiledevice3  (в PATH; или ideviceinstaller) — как поставить пакеты, см. README
 
 Примеры:
   python restore_apps.py search клик
@@ -23,10 +23,13 @@ Apple отдаст ошибку лицензии — обойти это скр�
   python restore_apps.py logout
 """
 import argparse
+import contextlib
 import csv
 import getpass
 import json
+import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -37,7 +40,6 @@ import urllib.request
 from pathlib import Path
 
 if sys.platform.startswith("win"):
-    import os
     # иначе Windows (и shutil.which) ищет ipatool.exe сначала в текущей папке, и подложенный там файл
     # получил бы пароль Apple ID; влияет и на поиск программ дочерними процессами
     os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
@@ -56,7 +58,6 @@ def _data_dir():
     """Служебные файлы программы: одна папка на всё (кэш ipatool, папка pymobiledevice3 и временные копии сессии
     тоже здесь), ничего не смешивается с другими программами и не разбросано по профилю."""
     if sys.platform.startswith("win"):
-        import os
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
@@ -144,7 +145,6 @@ def masked(cmd):
 def ipatool_env(home=None):
     """Окружение для ipatool: своя домашняя папка home (по умолчанию IPATOOL_HOME; на Windows ipatool берёт её
     из HOMEDRIVE+HOMEPATH) и свой кэш IPATOOL_CACHE (Go ищет его в %LOCALAPPDATA%, на Linux — в XDG_CACHE_HOME)."""
-    import os
     home = Path(home or IPATOOL_HOME)
     home.mkdir(parents=True, exist_ok=True)
     drive, rest = os.path.splitdrive(str(home))
@@ -160,23 +160,19 @@ def keychain_args():
     """Флаги ipatool для работы без консоли.
 
     ipatool хранит сессию в зашифрованном файле и на Windows спрашивает пароль к нему
-    через терминал; у оконной программы терминала нет ("The handle is invalid").
-    Поэтому пароль к хранилищу генерируется один раз, лежит в профиле пользователя
-    и передаётся флагом. Это пароль ТОЛЬКО к локальному файлу сессии, не пароль Apple ID.
+    через терминал; у оконной программы терминала нет ("The handle is invalid"). Поэтому
+    пароль передаётся флагом: у окна — SESSION_PASSPHRASE (случайный, только в памяти),
+    у консольной версии — из KEYCHAIN_PASS (создаётся при первой команде, удаляет `logout`).
+    Это пароль ТОЛЬКО к локальному файлу сессии, не пароль Apple ID.
     """
-    import os
-    import secrets
-
     if SESSION_PASSPHRASE:
         return ["--keychain-passphrase", SESSION_PASSPHRASE, "--non-interactive"]
     f = KEYCHAIN_PASS
     f.parent.mkdir(parents=True, exist_ok=True)
     if not f.exists() or not f.read_text(encoding="utf-8").strip():
         f.write_text(secrets.token_urlsafe(32), encoding="utf-8")
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(f, 0o600)
-        except OSError:
-            pass
     return ["--keychain-passphrase", f.read_text(encoding="utf-8").strip(), "--non-interactive"]
 
 
@@ -252,10 +248,8 @@ def cmd_logout(a):
     if ipatool and (IPATOOL_HOME / ".ipatool").exists() and KEYCHAIN_PASS.exists():
         run([ipatool, *keychain_args(), "auth", "revoke"])
     shutil.rmtree(IPATOOL_HOME / ".ipatool", ignore_errors=True)
-    try:
+    with contextlib.suppress(OSError):
         KEYCHAIN_PASS.unlink()
-    except OSError:
-        pass
     print("Сессия Apple ID удалена с компьютера.")
     return 0
 

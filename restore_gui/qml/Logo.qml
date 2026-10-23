@@ -14,7 +14,7 @@ Rectangle {
         anchors.fill: parent
         onPaint: {
             const c = getContext("2d"), s = width
-            c.strokeStyle = "white"; c.lineWidth = Math.max(2, s * 0.08)
+            c.strokeStyle = P.onAccent; c.lineWidth = Math.max(2, s * 0.08)
             c.lineCap = "round"; c.lineJoin = "round"
             c.beginPath()
             c.moveTo(s / 2, s * 0.27); c.lineTo(s / 2, s * 0.58)

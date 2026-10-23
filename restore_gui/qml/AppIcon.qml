@@ -20,7 +20,7 @@ Item {
         Text {
             anchors.centerIn: parent
             text: root.letter
-            color: "white"
+            color: P.onAccent
             font.family: P.font
             font.pixelSize: root.size * 0.42
             font.bold: true

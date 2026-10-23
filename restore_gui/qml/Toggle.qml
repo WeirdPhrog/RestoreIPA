@@ -14,7 +14,7 @@ Switch {
         border.color: s.checked ? P.accent : P.borderLight
         Behavior on color { ColorAnimation { duration: 150 } }
         Rectangle {
-            width: 16; height: 16; radius: 8; color: "white"
+            width: 16; height: 16; radius: 8; color: P.onAccent
             anchors.verticalCenter: parent.verticalCenter
             x: s.checked ? parent.width - width - 3 : 3
             Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }

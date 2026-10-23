@@ -5,7 +5,6 @@ import QtQuick.Layouts
 Rectangle {
     id: tile
     required property int index
-    required property var appId
     required property string title
     required property string letter
     required property string tint

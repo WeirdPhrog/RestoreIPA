@@ -1,8 +1,8 @@
 """Каталог удалённых приложений: категории, «семьи» копий под другими названиями, поиск. Без интерфейса."""
 import re
 
-# быстрый выбор: (подпись, App ID); показываются только те, что есть в каталоге
-BANKS = (
+# «Популярное» на главной: (подпись, App ID); показываются только те, что есть в каталоге
+POPULAR = (
     ("Сбербанк", 492224193), ("ВТБ", 472951966), ("Т-Банк", 455652438), ("Альфа-Банк", 353127685),
     ("Райффайзен", 557857165), ("Газпромбанк", 1406492297), ("Росбанк", 1438090038), ("Почта Банк", 979116495),
     ("МТС Банк", 1184367593), ("ПСБ", 548000415), ("Хоум Банк", 1061008282), ("ДомКлик", 1660762523),
@@ -92,13 +92,13 @@ class Catalog:
             hit = pool.get(ref)
             return [hit] if hit else [{"id": ref, "name": f"Приложение {ref}", "adhoc": True}]
         items = [a for a in pool.values() if q in a["name"].casefold()]
-        popular = {i for _t, i in BANKS}
+        popular = {i for _t, i in POPULAR}
         items.sort(key=lambda a: (a["id"] not in popular, not a["name"].casefold().startswith(q),
                                   "(" in a["name"], a["name"].casefold()))
         return items
 
     def popular(self):
-        return [dict(self.byid[i], name=t) for t, i in BANKS if i in self.byid]
+        return [dict(self.byid[i], name=t) for t, i in POPULAR if i in self.byid]
 
     def family(self, app):
         """Другие приложения той же семьи: оригинал первым, затем копии по алфавиту.

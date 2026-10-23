@@ -24,8 +24,8 @@ Button {
         elide: Text.ElideRight
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        color: !b.enabled ? (b.kind === "primary" ? "#9b93d9" : P.disabled)
-             : b.kind === "primary" ? "white"
+        color: !b.enabled ? (b.kind === "primary" ? P.onAccentDisabled : P.disabled)
+             : b.kind === "primary" ? P.onAccent
              : b.kind === "ghost" ? P.accentText
              : b.kind === "danger" ? P.danger : P.text
     }

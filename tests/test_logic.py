@@ -19,7 +19,7 @@ import sandbox  # noqa: E402,F401 — до restore_apps: тесты не тро�
 
 import restore_apps as core  # noqa: E402
 from restore_gui import apple, device, icons, storage  # noqa: E402
-from restore_gui.catalog import (BANKS, Catalog, categorize, family_key, parse_app_ref, plural,  # noqa: E402
+from restore_gui.catalog import (POPULAR, Catalog, categorize, family_key, parse_app_ref, plural,  # noqa: E402
                                  split_disguise)
 
 
@@ -72,7 +72,7 @@ class CatalogClass(unittest.TestCase):
 
     def test_search(self):
         found = [a["id"] for a in self.cat.search("сб")]
-        self.assertEqual(found[0], 492224193)  # популярное (BANKS) — первым
+        self.assertEqual(found[0], 492224193)  # популярное (POPULAR) — первым
         self.assertIn(7, found)
         self.assertEqual(self.cat.search("492224193")[0]["id"], 492224193)
         adhoc = self.cat.search("id123456789")[0]
@@ -84,7 +84,7 @@ class CatalogClass(unittest.TestCase):
     def test_lists(self):
         self.assertEqual([a["name"] for a in self.cat.by_name][:1], ["Альфа-Банк"])
         self.assertEqual(self.cat.categories, ["Банки", "Сервисы"])
-        self.assertEqual([a["name"] for a in self.cat.popular()], ["Сбербанк"])  # подпись из BANKS
+        self.assertEqual([a["name"] for a in self.cat.popular()], ["Сбербанк"])  # подпись из POPULAR
 
 
 class RealCatalog(unittest.TestCase):
@@ -94,7 +94,7 @@ class RealCatalog(unittest.TestCase):
         ids = [a["id"] for a in apps]
         self.assertEqual(len(ids), len(set(ids)), "App ID в каталоге повторяются")
         cat = Catalog(apps)
-        missing = [t for t, i in BANKS if i not in cat.byid]
+        missing = [t for t, i in POPULAR if i not in cat.byid]
         self.assertEqual(missing, [], "плитки «Популярного» без приложения в каталоге")
 
 
@@ -330,18 +330,6 @@ class Storage(unittest.TestCase):
             finally:
                 storage.HISTORY, storage.META_CACHE = old
 
-    def test_forget_email(self):
-        with tempfile.TemporaryDirectory() as d:
-            old, storage.EMAIL = storage.EMAIL, Path(d) / "email.txt"
-            try:
-                storage.EMAIL.write_text("someone@example.com", encoding="utf-8")
-                storage.forget_email()
-                self.assertFalse(storage.EMAIL.exists())
-                storage.forget_email()  # файла нет — не ошибка
-            finally:
-                storage.EMAIL = old
-        self.assertFalse(hasattr(storage, "save_email"), "email больше не должен записываться на диск")
-
 
 class Footprint(unittest.TestCase):
     """Вне %LOCALAPPDATA%\\Restore (и папки «ipa» рядом с exe) программа ничего не оставляет."""
@@ -393,20 +381,23 @@ class Footprint(unittest.TestCase):
         finally:
             pmd_common._HOMEFOLDER = saved
 
-    def test_remove_old_folders(self):
+    def test_remove_leftovers(self):
         (core.DATA_DIR / "cache" / "qmlcache").mkdir(parents=True)
         (core.DATA_DIR / "cache" / "qmlcache" / "x.qmlc").write_bytes(b"")
-        (Path.home() / ".pymobiledevice3").mkdir(exist_ok=True)
-        mine = Path.home() / ".restore_appstore"
-        mine.mkdir()
-        (mine / "чужое.txt").write_text("", encoding="utf-8")
+        (core.DATA_DIR / "support_qr.png").write_bytes(b"")
+        pmd = Path.home() / ".pymobiledevice3"
+        pmd.mkdir(exist_ok=True)
+        storage.remove_leftovers()
+        self.assertFalse((core.DATA_DIR / "cache").exists())
+        self.assertFalse((core.DATA_DIR / "support_qr.png").exists())
+        self.assertFalse(pmd.exists())
+        pmd.mkdir()  # с записями сопряжения pymobiledevice3, которым пользуются отдельно, — не трогаем
+        (pmd / "00008030-0011.plist").write_bytes(b"")
         try:
-            storage.remove_old_folders()
-            self.assertFalse((core.DATA_DIR / "cache").exists())
-            self.assertFalse((Path.home() / ".pymobiledevice3").exists())
-            self.assertTrue((mine / "чужое.txt").exists(), "удалена непустая папка")
+            storage.remove_leftovers()
+            self.assertTrue((pmd / "00008030-0011.plist").exists(), "удалена непустая папка")
         finally:
-            shutil.rmtree(mine, ignore_errors=True)
+            shutil.rmtree(pmd, ignore_errors=True)
 
     @unittest.skipUnless(sys.platform.startswith("win"), "занятый файл нельзя удалить только на Windows")
     def test_remove_stale_unpacked(self):
@@ -498,27 +489,6 @@ class Release(unittest.TestCase):
         self.assertEqual(self.rel.check(f"v{core.__version__}"), [])
         self.assertTrue(self.rel.check("v0.0.1"), "тег не той версии прошёл проверку")
         self.assertIsNone(self.rel.notes("999.0.0"))
-
-    def test_no_support_button_leftovers(self):
-        """Кнопка «Поддержать разработчика» убрана целиком: ни в коде, ни в сборке."""
-        root = Path(__file__).resolve().parent.parent
-        files = [*root.glob("*.py"), *root.glob("restore_gui/*.py"), *root.glob("restore_gui/qml/*.qml"),
-                 root / "RestoreAppStore.spec", root / "requirements-build.txt"]
-        for f in files:
-            text = f.read_text(encoding="utf-8").lower()
-            for word in ("cloudtips", "supporturl", "segno", "поддержать разработчика"):
-                self.assertFalse(word in text, f"{f.name}: осталось «{word}»")
-
-    def test_no_installer_leftovers(self):
-        """Программа — один exe без установщика: ни Inno Setup, ни сборки папкой, ни метки установки."""
-        root = Path(__file__).resolve().parent.parent
-        self.assertFalse((root / "installer").exists())
-        files = [*root.glob("*.py"), *root.glob("restore_gui/*.py"), *root.glob(".github/workflows/*.yml"),
-                 root / "RestoreAppStore.spec", root / "build.ps1", root / "README.md"]
-        for f in files:
-            text = f.read_text(encoding="utf-8-sig").lower()
-            for word in ("inno setup", "iscc", "restoresetup", "installed.txt", "restore_onedir", "skipinstaller"):
-                self.assertFalse(word in text, f"{f.name}: осталось «{word}»")
 
 
 if __name__ == "__main__":

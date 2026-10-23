@@ -112,8 +112,8 @@ ApplicationWindow {
                         id: logText
                         readOnly: true; selectByMouse: true
                         wrapMode: TextEdit.Wrap
-                        color: "#c9c9d3"; selectionColor: P.accent
-                        font.family: "Consolas"; font.pixelSize: 12
+                        color: P.logText; selectionColor: P.accent
+                        font.family: P.fontMono; font.pixelSize: 12
                         background: null
                     }
                 }

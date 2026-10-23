@@ -34,7 +34,7 @@ Rectangle {
                 readonly property bool current: backend.page === modelData[0]
                 Layout.fillWidth: true
                 height: 42; radius: 10
-                color: current ? P.card : (navHover.hovered ? "#1b1b21" : "transparent")
+                color: current ? P.card : (navHover.hovered ? P.navHover : "transparent")
                 Behavior on color { ColorAnimation { duration: 120 } }
                 Rectangle { width: 3; height: nav.current ? 20 : 0; radius: 2; color: P.accent; x: 4
                             anchors.verticalCenter: parent.verticalCenter

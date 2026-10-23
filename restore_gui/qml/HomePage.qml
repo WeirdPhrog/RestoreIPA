@@ -73,16 +73,16 @@ ColumnLayout {
             anchors.verticalCenter: parent.verticalCenter
             x: 24
             spacing: 4
-            Text { text: "Найти мои удалённые приложения"; color: "white"; font.family: P.font
+            Text { text: "Найти мои удалённые приложения"; color: P.onAccent; font.family: P.font
                    font.pixelSize: 19; font.bold: true }
-            Text { text: "Проверим историю вашего Apple ID и покажем, что можно вернуть"; color: "#e4e1ff"
+            Text { text: "Проверим историю вашего Apple ID и покажем, что можно вернуть"; color: P.onAccentMuted
                    font.family: P.font; font.pixelSize: 13 }
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right; anchors.rightMargin: bannerHover.hovered ? 20 : 26
             Behavior on anchors.rightMargin { NumberAnimation { duration: 150 } }
-            text: "→"; color: "white"; font.pixelSize: 26; font.bold: true
+            text: "→"; color: P.onAccent; font.pixelSize: 26; font.bold: true
         }
         HoverHandler { id: bannerHover; cursorShape: Qt.PointingHandCursor }
         TapHandler { id: bannerTap; onTapped: backend.findMine() }
@@ -119,7 +119,7 @@ ColumnLayout {
             AppTile {
                 anchors.fill: parent; anchors.margins: 5
                 index: cell.index
-                appId: cell.model.appId; title: cell.model.title; letter: cell.model.letter
+                title: cell.model.title; letter: cell.model.letter
                 tint: cell.model.tint; icon: cell.model.icon; status: cell.model.status
                 statusKind: cell.model.statusKind; selected: cell.model.selected; copies: cell.model.copies
             }

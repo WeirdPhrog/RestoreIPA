@@ -46,10 +46,12 @@ def adopt_old_cache():
     if not sys.platform.startswith("win"):
         return False
     old = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ipatool"
+    if old == core.IPATOOL_CACHE:
+        return False
     moved = False
     for name in ("sap", "unicorn"):
         src, dest = old / name, core.IPATOOL_CACHE / name
-        if src.is_dir() and not dest.exists() and old != core.IPATOOL_CACHE:
+        if src.is_dir() and not dest.exists():
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 src.rename(dest)  # тот же диск: мгновенно, без копирования
@@ -211,7 +213,7 @@ def fetch_available(ids, country, chunk=100):
     found = set()
     for i in range(0, len(ids), chunk):
         part = ids[i:i + chunk]
-        url = "https://itunes.apple.com/lookup?country=%s&id=%s" % (country, ",".join(str(x) for x in part))
+        url = f"https://itunes.apple.com/lookup?country={country}&id=" + ",".join(map(str, part))
         try:
             with urllib.request.urlopen(url, timeout=20) as r:
                 data = json.load(r)

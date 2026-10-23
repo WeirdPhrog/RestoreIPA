@@ -11,7 +11,7 @@ Rectangle {
     border.color: checked ? P.accent : (area.containsMouse ? P.muted : P.borderLight)
     border.width: 2
     Behavior on color { ColorAnimation { duration: 120 } }
-    Text { anchors.centerIn: parent; text: "✓"; color: "white"; font.pixelSize: 13; font.bold: true; visible: c.checked }
+    Text { anchors.centerIn: parent; text: "✓"; color: P.onAccent; font.pixelSize: 13; font.bold: true; visible: c.checked }
     MouseArea {
         id: area
         anchors.fill: parent

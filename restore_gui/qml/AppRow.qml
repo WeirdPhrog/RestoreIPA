@@ -5,7 +5,6 @@ import QtQuick.Layouts
 Rectangle {
     id: row
     required property int index
-    required property var appId
     required property string title
     required property string sub
     required property string letter

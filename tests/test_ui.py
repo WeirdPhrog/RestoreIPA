@@ -63,27 +63,16 @@ class Window(unittest.TestCase):
         self.pump()
         self.assertEqual(MESSAGES, [], "\n".join(MESSAGES))
 
-    def test_logout_and_close_erase_email(self):
-        import tempfile
-        from restore_gui import storage
-        b = self.backend
-        with tempfile.TemporaryDirectory() as d:
-            old, storage.EMAIL = storage.EMAIL, Path(d) / "email.txt"
-            wipe = b.wipe_session
-            b.wipe_session = lambda revoke=True: False  # настоящую сессию пользователя не трогаем
-            try:
-                for action in (b.logout, b.shutdown):
-                    storage.EMAIL.write_text("someone@example.com", encoding="utf-8")
-                    b.loggedIn, b.account = True, "someone@example.com"
-                    action()
-                    self.wait_idle()  # «Выйти» стирает сессию в фоне
-                    self.assertFalse(storage.EMAIL.exists(), f"{action.__name__} не стёр email")
-                    if action == b.logout:
-                        self.assertEqual(b.account, "", "после «Выйти» email остался на экране")
-            finally:
-                storage.EMAIL = old
-                b.wipe_session = wipe
-                self.reopen()
+    def test_wipe_session_removes_console_session_password(self):
+        """Окно стирает общую с консольной версией сессию — и keychain.pass, пароль к ней."""
+        import restore_apps as core
+        session = core.IPATOOL_HOME / ".ipatool"
+        session.mkdir(parents=True, exist_ok=True)
+        (session / "cookies").write_text("{}", encoding="utf-8")
+        core.KEYCHAIN_PASS.write_text("пароль консольной версии", encoding="utf-8")
+        self.assertTrue(self.backend.wipe_session(revoke=False))
+        self.assertFalse(session.exists())
+        self.assertFalse(core.KEYCHAIN_PASS.exists())
 
     def wait_idle(self, seconds=10):
         import time
@@ -199,9 +188,10 @@ class Window(unittest.TestCase):
             b.on_purchases_result({1: "Банк A", 2: "Магазин A"}, set())
             b.toggleSelected("mine", 0)
             b.open_detail(b.mine.items[0])
-            b.loggedIn = True
+            b.loggedIn, b.account = True, "someone@example.com"
             b.logout()
             self.assertEqual((b.purchases, b.avail, b.selected, b.owned_state), ([], None, {}, {}))
+            self.assertEqual(b.account, "", "после «Выйти» email остался на экране")
             self.assertEqual(b.mine.rowCount(), 0)
             self.assertFalse(b.detailOpen)
             self.assertFalse(b.detail["alive"], "проверки панели продолжили бы идти по стираемой сессии")

@@ -1,4 +1,4 @@
-"""Иконка программы (assets/icon.ico): тот же логотип, что рисует App._logo — круг с градиентом и стрелка вниз.
+"""Иконка программы (assets/icon.ico): тот же логотип, что restore_gui/qml/Logo.qml, — круг с градиентом и стрелка вниз.
 
 Запуск: build\\venv\\Scripts\\python tools\\make_icon.py  (нужен Pillow)
 """

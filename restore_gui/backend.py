@@ -7,7 +7,6 @@ import datetime
 import re
 import secrets
 import threading
-from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -25,7 +24,7 @@ from .tasks import TasksMixin
 
 LOG_FLUSH_MS = 100  # журнал копится и уходит в окно одним куском: ipatool при скачивании пишет сотни строк
 
-APP_KEYS = ("appId", "title", "sub", "letter", "tint", "icon", "status", "statusKind", "selected", "copies")
+APP_KEYS = ("title", "sub", "letter", "tint", "icon", "status", "statusKind", "selected", "copies")
 
 
 def qprop(type_, name):
@@ -95,16 +94,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
         for k, v in self.DEFAULTS.items():
             setattr(self, "_" + k, v)
         core.SESSION_PASSPHRASE = secrets.token_urlsafe(32)  # только в памяти, на диск не пишется
-        # пароль к сессии открытым текстом: из ранних версий и от консольной версии (её сессию GUI всё равно стирает);
-        # support_qr.png — QR-код для доната из версий до 1.1.0 (окно доната убрано)
-        for old in (Path.home() / ".restore_appstore" / "keychain.pass", core.KEYCHAIN_PASS,
-                    core.DATA_DIR / "support_qr.png"):
-            try:
-                old.unlink()
-            except OSError:
-                pass
-        storage.forget_email()  # email.txt прежних версий: email Apple ID на диске не храним
-        storage.remove_old_folders()
+        storage.remove_leftovers()
         self.catalog = Catalog(core.load_catalog())
         self.purchases = []
         self.avail = None  # ID покупок, которые сейчас есть в сторе; None — не проверялось
@@ -166,7 +156,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
     ipaFiles = Property(QObject, lambda self: self._ipa, constant=True)
     categories = Property("QVariantList", lambda self: ["Все"] + self.catalog.categories, constant=True)
     version = Property(str, lambda self: core.__version__, constant=True)
-    palette = Property("QVariantMap", lambda self: theme.QML, constant=True)
 
     @Property(str, constant=True)
     def greeting(self):
@@ -255,7 +244,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
         name, alias = split_disguise(a["name"])
         st = self.owned_state.get(app_id)
         return {
-            "appId": app_id, "title": name,
+            "title": name,
             "sub": f"под видом «{alias}»" if alias else ("не из каталога — по App ID" if a.get("adhoc")
                                                           else a.get("cat", "")),
             "letter": self.letter_of(name), "tint": self.tint_of(app_id), "icon": self.icon_urls.get(app_id, ""),
@@ -418,7 +407,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
         # всё, что знали об аккаунте, забываем сразу: на общем компьютере следующий человек не должен видеть
         # чужие покупки, а его находки — смешиваться с ними
         self.close_detail()  # её проверки больше не повторяются (d["alive"] = False)
-        storage.forget_email()
         self.purchases, self.avail = [], None
         self.owned_state.clear()
         self.clear_selection()
@@ -540,4 +528,3 @@ class Backend(QObject, TasksMixin, DetailMixin):
             self.detail["alive"] = False
         close_procs()  # иначе ipatool и установщик продолжили бы работать без окна; новых не запускаем
         self.wipe_session()
-        storage.forget_email()

@@ -16,9 +16,9 @@ from .apple import (SESSION_LOST, clip, explain_error, fetch_available, in_sessi
                     ownership, parse_versions, run_quiet)
 from .catalog import split_disguise
 from .device import probe_device
-from .theme import VERSIONS_PAGE
 
 CHECKING = {"text": "проверяю…", "kind": "text"}
+VERSIONS_PAGE = 15  # версий в панели за раз: для каждой видимой версии номер и дату спрашиваем у Apple
 
 
 class DetailMixin:
@@ -77,7 +77,7 @@ class DetailMixin:
             status, kind = "проверяю…", "muted"
         else:
             status, kind = "", "muted"
-        return {"appId": a["id"], "title": f"«{alias}»" if alias else main_name,
+        return {"title": f"«{alias}»" if alias else main_name,
                 "sub": ("копия под видом другого приложения" if alias else "оригинальное приложение") + f" · ID {a['id']}",
                 "letter": self.letter_of(alias or main_name), "tint": self.tint_of(a["id"]),
                 "icon": self.icon_urls.get(a["id"], ""), "status": status, "statusKind": kind}

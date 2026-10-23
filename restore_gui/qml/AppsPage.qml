@@ -58,7 +58,7 @@ ColumnLayout {
             border.color: on ? P.accent : P.border
             Behavior on color { ColorAnimation { duration: 150 } }
             Text { id: chipText; anchors.centerIn: parent; text: chip.modelData; font.family: P.font
-                   font.pixelSize: 12; color: chip.on ? "white" : P.muted }
+                   font.pixelSize: 12; color: chip.on ? P.onAccent : P.muted }
             HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: { backend.setCategory(chip.modelData); list.positionViewAtBeginning() } }
         }

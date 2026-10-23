@@ -19,8 +19,6 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from restore_gui import app as gui  # noqa: E402
 
-SBER = 492224193
-
 
 def wait(app, seconds):
     end = time.time() + seconds

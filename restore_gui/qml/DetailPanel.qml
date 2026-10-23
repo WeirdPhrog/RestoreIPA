@@ -10,7 +10,7 @@ Drawer {
     height: parent.height
     modal: true
     dragMargin: 0  // открывается только по нажатию на приложение
-    Overlay.modal: Rectangle { color: "#80000000" }
+    Overlay.modal: Rectangle { color: P.shade }
     background: Rectangle {
         color: P.bg
         Rectangle { width: 1; height: parent.height; color: P.border }
@@ -129,7 +129,7 @@ Drawer {
                                 Layout.fillWidth: true
                                 text: backend.detailAnswer
                                 readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
-                                color: P.text; font.family: "Consolas"; font.pixelSize: 11
+                                color: P.text; font.family: P.fontMono; font.pixelSize: 11
                                 background: Rectangle { radius: 8; color: P.field }
                             }
                             Btn { text: "Повторить проверку"; lock: false; implicitHeight: 34; onClicked: backend.detailRecheck() }
@@ -170,8 +170,9 @@ Drawer {
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 0
-                                        Text { text: ver.title; color: P.text; font.family: P.font; font.pixelSize: 12
-                                               font.bold: true; Layout.fillWidth: true }
+                                        Text { textFormat: Text.PlainText; text: ver.title; color: P.text
+                                               font.family: P.font; font.pixelSize: 12; font.bold: true
+                                               Layout.fillWidth: true }
                                         Text { text: ver.sub; color: ver.mine ? P.ok : P.muted; font.family: P.font
                                                font.pixelSize: 10; Layout.fillWidth: true }
                                     }

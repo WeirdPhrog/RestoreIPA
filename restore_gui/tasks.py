@@ -128,7 +128,7 @@ class TasksMixin:
                 return name, p
         if ask:
             self.show_notice("Нет установщика",
-                             "Нужен pymobiledevice3 (pip install pymobiledevice3) или ideviceinstaller.")
+                             "Нужен pymobiledevice3 или ideviceinstaller в PATH (см. README, «Запуск из исходников»).")
         return None
 
     def tool_status(self):
@@ -252,7 +252,8 @@ class TasksMixin:
 
     # ---------- сессия ----------
     def wipe_session(self, revoke=True):
-        """Завершить сессию Apple ID: `ipatool auth revoke` и удалить папку сессии ~/.ipatool.
+        """Завершить сессию Apple ID: `ipatool auth revoke`, удалить папку сессии ~/.ipatool и keychain.pass —
+        пароль к ней, если сессию оставила консольная версия (папка сессии у них общая).
 
         Возвращает True, если сессия была. Пароль и email Apple ID программа на диске не хранит.
         Под self.dlock, чтобы ни одна команда не шла по стираемой сессии; если за 10 с её не отпустили
@@ -267,6 +268,8 @@ class TasksMixin:
                 clear_stale_locks()  # от только что завершённых процессов: иначе revoke может не пройти
                 run_quiet([ipatool, *core.keychain_args(), "auth", "revoke"], timeout=15, tag="wipe")
             shutil.rmtree(folder, ignore_errors=True)
+            with contextlib.suppress(OSError):
+                core.KEYCHAIN_PASS.unlink()
             # копии сессии для параллельных запросов (apple.in_session_copies), в т.ч. оставшиеся после сбоя
             for d in scan_copies():
                 existed = existed or (d / "w0" / ".ipatool").exists()
@@ -439,7 +442,7 @@ class TasksMixin:
         self.log("Подключите iPhone по USB, разблокируйте и нажмите «Доверять».")
         self.note_if_installed(installer, ipa)
         rc, out = self.stream(installer_cmd(installer, "install", ipa))
-        self.log("Установлено." if rc == 0 else "Установка не удалась (код %s)." % rc)
+        self.log("Установлено." if rc == 0 else f"Установка не удалась (код {rc}).")
         if rc != 0:
             self.hint(out)
         return rc == 0
@@ -609,8 +612,8 @@ class TasksMixin:
                 continue
             try:
                 req = urllib.request.Request(f"https://{host}/", method="HEAD")
-                urllib.request.urlopen(req, timeout=10)
-                ok = True
+                with urllib.request.urlopen(req, timeout=10):
+                    ok = True
             except urllib.error.HTTPError:
                 ok = True  # сервер ответил (404/403 — нормально для корня)
             except (urllib.error.URLError, OSError) as e:

@@ -1,6 +1,5 @@
-"""Служебные файлы программы (%LOCALAPPDATA%\\Restore) и скачанные .ipa. Ни пароль, ни email Apple ID здесь
-не хранятся. Вне этой папки программа следов не оставляет: ниже же — уборка того, что оставляют Qt, распаковка exe
-и прежние версии."""
+"""Служебные файлы программы (%LOCALAPPDATA%\\Restore) и скачанные .ipa; уборка того, что оставляют Qt, распаковка
+exe и прежние версии программы. Ни пароль, ни email Apple ID на диске не хранятся."""
 import contextlib
 import json
 import re
@@ -15,7 +14,6 @@ import restore_apps as core
 _LOCK = threading.Lock()  # чтение-изменение-запись файлов ниже идёт из нескольких потоков
 HISTORY = core.DATA_DIR / "history.json"  # {app_id: [ID версий, скачанных через программу]}
 META_CACHE = core.DATA_DIR / "versions_cache.json"  # номера и даты версий: публичные данные Apple
-EMAIL = core.DATA_DIR / "email.txt"  # так прежние версии запоминали email для поля входа; теперь только удаляется
 
 
 def _read_json(path):
@@ -74,14 +72,6 @@ def save_meta(app_id, meta):
         _write(META_CACHE, json.dumps(cache))
 
 
-def forget_email():
-    """Удалить email.txt прежних версий: email Apple ID программа на диске не держит."""
-    try:
-        EMAIL.unlink()
-    except OSError:
-        pass  # нет файла — хорошо; занят или нет прав — попробуем при следующем выходе/закрытии
-
-
 def archived(app_id):
     """IPA этого приложения, уже лежащие в папке загрузок (новые первыми)."""
     if not core.OUT_DIR.exists():
@@ -96,14 +86,15 @@ QT_REGISTRY = r"Software\QtProject"  # QSettings «QtProject»: сюда QFileDi
 STALE_AFTER = 600  # с; папка распаковки моложе может принадлежать exe, который распаковывается прямо сейчас
 
 
-def remove_old_folders():
-    """Папки, которые оставляли версии до 1.2.0: кэш QML (DATA_DIR\\cache рос с каждым запуском exe, теперь он
-    отключён — см. app.qt_environment), пустые ~/.restore_appstore и ~/.pymobiledevice3 (своя папка
-    pymobiledevice3 теперь в DATA_DIR — см. device.own_pmd_folder). Непустые папки в профиле не трогаем."""
+def remove_leftovers():
+    """Удалить то, что оставляли версии до 1.2.0: QR-код доната (support_qr.png, 1.0.x), кэш QML (DATA_DIR\\cache
+    рос с каждым запуском exe, теперь отключён — см. app.qt_environment) и пустую ~/.pymobiledevice3 (папка
+    pymobiledevice3 теперь в DATA_DIR — см. device.own_pmd_folder; непустую не трогаем)."""
+    with contextlib.suppress(OSError):
+        (core.DATA_DIR / "support_qr.png").unlink()
     shutil.rmtree(core.DATA_DIR / "cache", ignore_errors=True)
-    for old in (Path.home() / ".restore_appstore", Path.home() / ".pymobiledevice3"):
-        with contextlib.suppress(OSError):
-            old.rmdir()
+    with contextlib.suppress(OSError):
+        (Path.home() / ".pymobiledevice3").rmdir()
 
 
 def remove_stale_unpacked():
