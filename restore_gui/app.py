@@ -33,11 +33,18 @@ def qt_environment():
     # интерфейса (наведение, нажатие, появление иконок), и экран мерцает. Без flip VRR не включается — это
     # проверено чтением состояния драйвера (NvAPI_Disp_GetVRRInfo); плавность прокрутки та же.
     os.environ.setdefault("QT_D3D_NO_FLIP", "1")
+    # Без кэша скомпилированного QML на диске. exe при каждом запуске распаковывается в новую папку %TEMP%\_MEI…,
+    # а кэш привязан к пути файла: он ни разу не пригождался и только рос — по файлу на каждый .qml за запуск.
+    # Компиляция 20 файлов при запуске — доли секунды.
+    os.environ.setdefault("QML_DISABLE_DISK_CACHE", "1")
 
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--pmd":  # режим установщика (pymobiledevice3)
         from pymobiledevice3.__main__ import main as pmd_main
+
+        from .device import own_pmd_folder
+        own_pmd_folder()
         sys.argv = ["pymobiledevice3"] + sys.argv[2:]
         sys.exit(int(pmd_main()))
     qt_environment()

@@ -2,15 +2,11 @@
 # Сборка: build.ps1 (он же скачивает и проверяет ресурсы в build\res).
 # Каталог и иконка — из репозитория; ipatool.exe, libunicorn.dll и лицензия Unicorn — из build\res.
 # Всё кладётся в корень ресурсов (core.BUNDLE).
-# Два варианта (RESTORE_ONEDIR):
-#   0 — dist\RestoreAppStore.exe одним файлом (портативный): при каждом запуске распаковывается во временную папку;
-#   1 — dist\RestoreAppStore\ папкой (для установщика): распаковывать нечего, запускается в разы быстрее.
-import os
+# Результат — dist\RestoreAppStore.exe одним файлом, без установщика. При запуске он распаковывается во
+# %TEMP%\_MEI… и удаляет эту папку при выходе, поэтому чем меньше сборка, тем быстрее запуск.
 import re
 
 from PyInstaller.utils.hooks import collect_all
-
-ONEDIR = os.environ.get("RESTORE_ONEDIR") == "1"
 
 RES = "build/res"
 datas = [("removed_ru_appstore_app_ids.csv", "."), ("assets/icon.ico", "."),
@@ -41,7 +37,7 @@ a = Analysis(
     noarchive=False,
 )
 
-# PyInstaller забирает почти весь Qt (браузер WebEngine — 194 МБ, 3D, мультимедиа, PDF, 2600 файлов QML-модулей).
+# PyInstaller забирает почти весь Qt (3D, мультимедиа, 2600 файлов QML-модулей и т. д.).
 # Интерфейсу нужны только QtQuick, Controls (стиль Basic), Layouts и Effects — остальное вырезаем.
 # Если что-то нужное пропало, сборку остановит проверка `RestoreAppStore.exe --check-ui` в build.ps1.
 DROP = re.compile(
@@ -67,10 +63,5 @@ def needed(entry):
 a.binaries = [e for e in a.binaries if needed(e)]
 a.datas = [e for e in a.datas if needed(e)]
 pyz = PYZ(a.pure)
-common = dict(name="RestoreAppStore", icon="assets/icon.ico", version="build/version_info.txt", console=False,
-              upx=False)
-if ONEDIR:
-    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
-    coll = COLLECT(exe, a.binaries, a.datas, name="RestoreAppStore", upx=False)
-else:
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **common)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="RestoreAppStore", icon="assets/icon.ico",
+          version="build/version_info.txt", console=False, upx=False)

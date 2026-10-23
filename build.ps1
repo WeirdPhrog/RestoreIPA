@@ -1,22 +1,25 @@
 ﻿<#
-Сборка Restore: dist\RestoreAppStore.exe (PyInstaller) и dist\RestoreSetup-<версия>.exe (Inno Setup 6).
+Сборка Restore: dist\RestoreAppStore.exe — программа одним файлом, без установщика (PyInstaller).
 
-  powershell -ExecutionPolicy Bypass -File build.ps1                 # exe + установщик
-  powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInstaller  # только exe
+  powershell -ExecutionPolicy Bypass -File build.ps1
 
-Нужно: Python 3.12 (py install 3.12), для установщика — Inno Setup 6.
-ipatool и Unicorn скачиваются из официальных релизов на GitHub; сборка останавливается, если не совпал SHA-256.
+Ставить ничего не нужно. Python 3.15 (официальный пакет python.org на nuget.org — без установщика), ipatool и
+Unicorn скачиваются в build\ из официальных источников; сборка останавливается, если не совпал SHA-256.
+Всё, что сборка скачивает и создаёт, включая кэши pip и PyInstaller, лежит в build\ и dist\.
 #>
-param([switch]$SkipInstaller)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+$PythonVersion = "3.15.1"
+$PythonUrl = "https://api.nuget.org/v3-flatcontainer/python/$PythonVersion/python.$PythonVersion.nupkg"
+$PythonSha = "a53df42a4fb57132896c3d99686c19c7f13d6f126bd603a9a9bc0e9b6ed83d22"  # пакет «python» от Python Software Foundation
 $IpatoolUrl = "https://github.com/majd/ipatool/releases/download/v2.7.0/ipatool-2.7.0-windows-amd64.tar.gz"
 $IpatoolSha = "b729608716908be287c2e6972f9e8cd05f879810ae5d182fc856c9e57cca0dd5"  # ipatool-2.7.0-windows-amd64.tar.gz.sha256sum
 $UnicornUrl = "https://github.com/unicorn-engine/unicorn/releases/download/2.1.4/windows-mingw64-shared.7z"
 $UnicornSha = "0960f938e66fa12c448742bddd2a03aa88abeeb2b3cda7156493a2da86228d3a"  # digest ассета в релизе 2.1.4
 $UnicornDllSha = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # = UNICORN_SHA256 в restore_gui/apple.py
 $UnicornLicenseUrl = "https://raw.githubusercontent.com/unicorn-engine/unicorn/2.1.4/COPYING"
+$Tar = "$env:SystemRoot\System32\tar.exe"  # bsdtar из Windows: .tar.gz, .zip (nupkg), а в Windows 11 — и .7z
 
 function Assert-Hash($path, $sha) {
     $h = (Get-FileHash $path -Algorithm SHA256).Hash
@@ -37,46 +40,55 @@ function Invoke-Native {
     if ($LASTEXITCODE) { throw "Команда завершилась с кодом ${LASTEXITCODE}: $($args -join ' ')" }
 }
 
-# --- окружение сборки ---
-function Test-Python312($exe) {
-    try {
-        & $exe -c "import sys; sys.exit(sys.version_info[:2] != (3, 12))" 2>$null
-        return $LASTEXITCODE -eq 0
-    } catch {
-        return $false  # нет такой программы (или заглушка python из Microsoft Store)
-    }
+function Get-PyVersion($exe) {
+    if (-not (Test-Path $exe)) { return $null }
+    try { return (& $exe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])") } catch { return $null }
 }
 
-$py = "build\venv\Scripts\python.exe"
-if (-not (Test-Path $py)) {
-    Write-Host "Создаю build\venv (Python 3.12)"
-    if (Test-Python312 "python") {
-        Invoke-Native python -m venv build\venv  # GitHub Actions: python 3.12 из setup-python
-    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-        # в кавычках: иначе PowerShell передаёт «-V:3.12» двумя аргументами, «-V:» и «3.12»
-        Invoke-Native py '-V:3.12' -m venv build\venv
-    } else {
-        throw "Нужен Python 3.12: py install 3.12 (или python 3.12 в PATH)"
-    }
+function New-EmptyDir($path) {
+    Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory $path | Out-Null
 }
-& $py -c "import sys; sys.exit(sys.version_info[:2] != (3, 12))"
-if ($LASTEXITCODE) { throw "build\venv не на Python 3.12 — удалите build\venv и запустите сборку снова" }
-Invoke-Native $py -m pip install --disable-pip-version-check -q -r requirements-build.txt
 
-# --- внешние компоненты ---
+# кэши pip и PyInstaller — тоже в build\, а не в %LOCALAPPDATA%
+$env:PIP_CACHE_DIR = Join-Path $PWD "build\cache\pip"
+$env:PYINSTALLER_CONFIG_DIR = Join-Path $PWD "build\cache\pyinstaller"
+$env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 New-Item -ItemType Directory -Force build\dl, build\res | Out-Null
 
+# --- окружение сборки ---
+$base = "build\python\tools\python.exe"
+$py = "build\venv\Scripts\python.exe"
+if ((Get-PyVersion $base) -ne $PythonVersion) {
+    Get-Checked $PythonUrl build\dl\python.nupkg $PythonSha
+    New-EmptyDir build\python
+    Invoke-Native $Tar -xf build\dl\python.nupkg -C build\python tools
+}
+if ((Get-PyVersion $py) -ne $PythonVersion) {
+    Write-Host "Создаю build\venv (Python $PythonVersion)"
+    Remove-Item -Recurse -Force build\venv -ErrorAction SilentlyContinue  # в том числе прежний, на Python 3.12
+    Invoke-Native $base -m venv build\venv
+}
+# requirements-build.txt — уже полный список с точными версиями (см. requirements-build.in), отсюда --no-deps
+Invoke-Native $py -m pip install -q --no-deps --only-binary=:all: -r requirements-build.txt
+
+# --- внешние компоненты ---
 Get-Checked $IpatoolUrl build\dl\ipatool.tar.gz $IpatoolSha
-Remove-Item -Recurse -Force build\dl\ipatool -ErrorAction SilentlyContinue
-New-Item -ItemType Directory build\dl\ipatool | Out-Null
-Invoke-Native tar -xzf build\dl\ipatool.tar.gz -C build\dl\ipatool
+New-EmptyDir build\dl\ipatool
+Invoke-Native $Tar -xzf build\dl\ipatool.tar.gz -C build\dl\ipatool
 $ipatoolExe = Get-ChildItem build\dl\ipatool -Recurse -Filter "ipatool*.exe" | Select-Object -First 1
 if (-not $ipatoolExe) { throw "В архиве ipatool нет exe" }
 Copy-Item $ipatoolExe.FullName build\res\ipatool.exe -Force
 
 Get-Checked $UnicornUrl build\dl\unicorn.7z $UnicornSha
-Remove-Item -Recurse -Force build\dl\unicorn -ErrorAction SilentlyContinue
-Invoke-Native $py -m py7zr x build\dl\unicorn.7z build\dl\unicorn
+New-EmptyDir build\dl\unicorn
+& $Tar -xf build\dl\unicorn.7z -C build\dl\unicorn
+if ($LASTEXITCODE) {  # tar в Windows 10 не читает .7z — тогда 7-Zip, если он есть
+    $sevenZip = @((Get-Command 7z -ErrorAction SilentlyContinue).Source, "$env:ProgramFiles\7-Zip\7z.exe") |
+        Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $sevenZip) { throw "Не удалось распаковать build\dl\unicorn.7z: нужна Windows 11 или 7-Zip (winget install 7zip.7zip)" }
+    Invoke-Native $sevenZip x -y -obuild\dl\unicorn build\dl\unicorn.7z | Out-Null
+}
 $dll = Get-ChildItem build\dl\unicorn -Recurse -Filter "libunicorn.dll" | Select-Object -First 1
 if (-not $dll) { throw "В архиве Unicorn нет libunicorn.dll" }
 Assert-Hash $dll.FullName $UnicornDllSha
@@ -90,38 +102,23 @@ if (-not (Test-Path build\res\UNICORN_COPYING.txt)) {
 Write-Host "Тесты"
 Invoke-Native $py -m unittest discover -s tests -q
 
-# --- exe: портативный одним файлом и папкой для установщика (см. RestoreAppStore.spec) ---
+# --- exe (см. RestoreAppStore.spec) ---
 if (-not (Test-Path assets\icon.ico)) { Invoke-Native $py tools\make_icon.py }
 $version = (& $py tools\write_version_info.py build\version_info.txt).Trim()
 if ($LASTEXITCODE) { throw "Не удалось записать версию" }
-foreach ($onedir in "0", "1") {
-    $env:RESTORE_ONEDIR = $onedir
-    Write-Host ("Собираю RestoreAppStore $version " + $(if ($onedir -eq "1") { "(папкой)" } else { "(одним файлом)" }))
-    Invoke-Native build\venv\Scripts\pyinstaller.exe RestoreAppStore.spec --noconfirm --log-level WARN --workpath "build\work$onedir" --distpath dist
-}
-Remove-Item Env:RESTORE_ONEDIR
+Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue  # в dist\ — только результат этой сборки
+Write-Host "Собираю RestoreAppStore $version"
+Invoke-Native build\venv\Scripts\pyinstaller.exe RestoreAppStore.spec --noconfirm --log-level WARN --workpath build\work --distpath dist
 
 # собранный интерфейс загружается без ошибок (иначе из Qt вырезано что-то нужное — см. DROP в spec)
-foreach ($exe in "dist\RestoreAppStore\RestoreAppStore.exe", "dist\RestoreAppStore.exe") {
-    $report = Join-Path $PWD "build\check-ui.txt"
-    $p = Start-Process $exe -ArgumentList "--check-ui", "`"$report`"" -Wait -PassThru -WindowStyle Hidden
-    if ($p.ExitCode -ne 0) { throw "Интерфейс в $exe не загрузился:`n" + (Get-Content $report -Raw -ErrorAction SilentlyContinue) }
-    Write-Host "Интерфейс загружается: $exe"
-}
-$outputs = @("dist\RestoreAppStore.exe")
+$exe = "dist\RestoreAppStore.exe"
+$report = Join-Path $PWD "build\check-ui.txt"
+$p = Start-Process $exe -ArgumentList "--check-ui", "`"$report`"" -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode -ne 0) { throw "Интерфейс в $exe не загрузился:`n" + (Get-Content $report -Raw -ErrorAction SilentlyContinue) }
+Write-Host "Интерфейс загружается: $exe ($([math]::Round((Get-Item $exe).Length / 1MB)) МБ)"
 
-# --- установщик ---
-if (-not $SkipInstaller) {
-    $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-              "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $iscc) { throw "Не найден Inno Setup 6 (ISCC.exe). Установите: winget install JRSoftware.InnoSetup — или запустите с -SkipInstaller." }
-    Write-Host "Собираю установщик"
-    Invoke-Native $iscc /Q "/DAppVersion=$version" installer\RestoreSetup.iss
-    $outputs += "dist\RestoreSetup-$version.exe"
-}
-
-# контрольные суммы — для страницы релиза. Переводы строк LF: с CRLF (как пишет Set-Content) `sha256sum -c`
-# в Git Bash и Linux принимает «\r» за часть имени файла и пишет, что файлы не найдены
-$sums = $outputs | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
-[IO.File]::WriteAllText((Join-Path $PWD "dist\SHA256SUMS.txt"), (($sums -join "`n") + "`n"), [Text.Encoding]::ASCII)
-$sums | ForEach-Object { Write-Host $_ }
+# контрольная сумма — для страницы релиза. Перевод строки LF: с CRLF (как пишет Set-Content) `sha256sum -c`
+# в Git Bash и Linux принимает «\r» за часть имени файла и пишет, что файл не найден
+$sum = "{0}  {1}" -f (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(), (Split-Path $exe -Leaf)
+[IO.File]::WriteAllText((Join-Path $PWD "dist\SHA256SUMS.txt"), "$sum`n", [Text.Encoding]::ASCII)
+Write-Host $sum

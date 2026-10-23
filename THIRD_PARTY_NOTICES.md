@@ -1,6 +1,6 @@
 # Сторонние компоненты
 
-Готовая программа (`RestoreAppStore.exe` и установленная версия) включает следующие компоненты. Исходный код каждого доступен по ссылке.
+Готовая программа (`RestoreAppStore.exe`) включает следующие компоненты. Исходный код каждого доступен по ссылке.
 
 | Компонент | Версия | Лицензия | Для чего | Исходники |
 |---|---|---|---|---|
@@ -10,16 +10,16 @@
 | pytun-pmd3 | 3.0.3 | GPL-3.0-or-later | зависимость pymobiledevice3 (сетевые туннели к iPhone) | https://github.com/doronz88/pytun-pmd3 |
 | Wintun (`wintun.dll`, внутри pytun-pmd3) | — | Prebuilt Binaries License (WireGuard LLC), текст рядом с dll | драйвер туннеля для pytun-pmd3 | https://www.wintun.net |
 | Qt for Python (PySide6) и библиотеки Qt 6 | 6.12.0 | LGPL-3.0 | интерфейс (Qt Quick) | https://code.qt.io/cgit/pyside/pyside-setup.git, https://code.qt.io |
-| Python | 3.12 | PSF License | среда выполнения | https://www.python.org |
+| Python | 3.15.1 | PSF License | среда выполнения | https://www.python.org |
 | PyInstaller (загрузчик) | 6.22.3 | GPL-2.0-or-later с исключением для сборок | упаковка в exe | https://github.com/pyinstaller/pyinstaller |
 
 Плюс зависимости pymobiledevice3 и Python-пакеты, которые PyInstaller упаковывает вместе с ними; их лицензии — в соответствующих пакетах.
 
 Полный текст лицензии Unicorn лежит внутри exe (`UNICORN_COPYING.txt`). Так как pymobiledevice3 распространяется под GPL-3.0, вся программа распространяется под [GPL-3.0](LICENSE).
 
-Библиотеки Qt подключаются динамически: в установленной версии это отдельные файлы `Qt6*.dll` в папке `_internal\PySide6`, их можно заменить своей сборкой Qt той же версии (условие LGPL-3.0).
+Библиотеки Qt подключаются динамически: это отдельные файлы `Qt6*.dll`, которые exe при запуске распаковывает во временную папку. Чтобы заменить их своей сборкой Qt той же версии (условие LGPL-3.0), положите её вместо файлов PySide6 в `build\venv` и соберите exe заново (`build.ps1`) — все исходники и скрипт сборки открыты.
 
-`ipatool` и `libunicorn.dll` при сборке скачиваются из официальных релизов на GitHub, SHA-256 сверяется (см. `build.ps1`).
+Python (официальный пакет python.org с nuget.org), `ipatool` и `libunicorn.dll` при сборке скачиваются из официальных источников, SHA-256 сверяется (см. `build.ps1`).
 
 ## Каталог приложений
 

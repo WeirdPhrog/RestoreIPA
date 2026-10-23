@@ -160,6 +160,35 @@ class Window(unittest.TestCase):
             gui.qt_environment()
             self.assertEqual(os.environ["QT_D3D_NO_FLIP"], "0")
 
+    def test_qt_environment_disables_qml_disk_cache(self):
+        """Кэш QML привязан к пути файла, а exe распаковывается каждый раз в новую папку: кэш только рос бы."""
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QML_DISABLE_DISK_CACHE", None)
+            gui.qt_environment()
+            self.assertEqual(os.environ["QML_DISABLE_DISK_CACHE"], "1")
+
+    def test_file_dialog_leaves_registry_as_it_was(self):
+        """ask_file оборачивает QFileDialog в storage.registry_untouched: Qt пишет туда последнюю папку."""
+        from unittest import mock
+
+        from restore_gui import backend as backend_module
+        entered = []
+
+        class Guard:
+            def __enter__(self):
+                entered.append("in")
+
+            def __exit__(self, *exc):
+                entered.append("out")
+
+        with mock.patch.object(backend_module.storage, "registry_untouched", Guard), \
+                mock.patch.object(backend_module.QFileDialog, "getOpenFileName",
+                                  side_effect=lambda *a: entered.append("dialog") or ("", "")):
+            self.assertIsNone(self.backend.ask_file("t", ".", "*.ipa"))
+        self.assertEqual(entered, ["in", "dialog", "out"])
+
     def test_logout_forgets_account_data(self):
         """После «Выйти» не остаётся покупок, отметок и выбора прежнего Apple ID, панель приложения закрыта."""
         b = self.backend
@@ -349,7 +378,7 @@ class Window(unittest.TestCase):
             b.stream, b.ask_main, b.session_ok, b.post, tasks.sap_ready, b.loggedIn, b.account = saved
 
     def test_download_creates_missing_parent_folders(self):
-        """У установленной версии папка — Документы\\Restore\\ipa; если нет даже Restore, скачивание не падает."""
+        """Если рядом с exe писать нельзя, папка — Документы\\Restore\\ipa; если нет даже Restore, скачивание не падает."""
         import tempfile
         import restore_apps as core
         b = self.backend

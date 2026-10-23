@@ -6,7 +6,6 @@
 import datetime
 import re
 import secrets
-import tempfile
 import threading
 from pathlib import Path
 
@@ -17,7 +16,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 import restore_apps as core
 
 from . import storage, theme
-from .apple import close_procs
+from .apple import close_procs, scan_copies
 from .catalog import Catalog, parse_app_ref, plural, split_disguise
 from .detail import DetailMixin
 from .icons import IconLoader, cached
@@ -105,6 +104,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
             except OSError:
                 pass
         storage.forget_email()  # email.txt прежних версий: email Apple ID на диске не храним
+        storage.remove_old_folders()
         self.catalog = Catalog(core.load_catalog())
         self.purchases = []
         self.avail = None  # ID покупок, которые сейчас есть в сторе; None — не проверялось
@@ -145,11 +145,12 @@ class Backend(QObject, TasksMixin, DetailMixin):
     def start_background(self):
         # сессия живёт только пока открыта программа: остатки прошлого запуска (например, после сбоя) стираем.
         # `ipatool auth revoke` может идти секунды — в фоне; кнопки на это время заблокированы (start).
-        if (core.IPATOOL_HOME / ".ipatool").exists() or any(Path(tempfile.gettempdir()).glob("restore_scan_*")):
+        if (core.IPATOOL_HOME / ".ipatool").exists() or scan_copies():
             self.start("Удаление сессии прошлого запуска", self.task_wipe_old)
         # слежение за iPhone импортирует pymobiledevice3 (секунду с лишним под GIL): сначала дорисуем окно
         QTimer.singleShot(1000, lambda: [threading.Thread(target=fn, daemon=True).start()
-                                         for fn in (self._prepare_engine, self.watch_device)])
+                                         for fn in (self._prepare_engine, self.watch_device,
+                                                    storage.remove_stale_unpacked)])
         QTimer.singleShot(1500, lambda: self.icons.start(a["id"] for a in self.catalog.apps))
 
     def task_wipe_old(self):
@@ -216,7 +217,8 @@ class Backend(QObject, TasksMixin, DetailMixin):
         return QMessageBox.question(None, title, text) == QMessageBox.Yes
 
     def ask_file(self, title, folder, filters):
-        path, _ = QFileDialog.getOpenFileName(None, title, str(folder), filters)
+        with storage.registry_untouched():  # QFileDialog запоминает папку в реестре — см. registry_untouched
+            path, _ = QFileDialog.getOpenFileName(None, title, str(folder), filters)
         return path or None
 
     def ask_main(self, title, prompt):

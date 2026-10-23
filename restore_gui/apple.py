@@ -20,6 +20,8 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # цветовые коды ipatool в журнале не нужны
 NOT_OWNED = re.compile(r"license is required", re.I)  # Apple: приложения нет в истории этого Apple ID
 SESSION_LOST = re.compile(r"failed to get account|keyring|not logged|sign.?in|password token", re.I)
+# копии сессии для параллельных запросов (in_session_copies); до 1.2.0 — %TEMP%\restore_scan_*
+SCAN_ROOT = core.DATA_DIR / "scan"
 UNICORN_VERSION = "2.1.4"
 UNICORN_SHA256 = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # как в исходниках ipatool
 # адреса, без которых не работает вход/скачивание (для «Проверить связь с Apple»)
@@ -35,15 +37,28 @@ APPLE_HOSTS = (
 )
 
 
-def ipatool_cache_root():
-    """Куда ipatool кладёт кэш (Go: os.UserCacheDir()/ipatool)."""
-    if sys.platform.startswith("win"):
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    elif sys.platform == "darwin":
-        base = str(Path.home() / "Library" / "Caches")
-    else:
-        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "ipatool"
+def adopt_old_cache():
+    """Перенести кэш ipatool версий до 1.2.0 из %LOCALAPPDATA%\\ipatool в папку программы (core.IPATOOL_CACHE).
+
+    Там служебные файлы Apple для входа (их первая загрузка — до 15 минут) и Unicorn, вместе ~60 МБ. Переносятся
+    только эти две папки и только если в папке программы их ещё нет; пустая старая папка удаляется.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    old = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ipatool"
+    moved = False
+    for name in ("sap", "unicorn"):
+        src, dest = old / name, core.IPATOOL_CACHE / name
+        if src.is_dir() and not dest.exists() and old != core.IPATOOL_CACHE:
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dest)  # тот же диск: мгновенно, без копирования
+                moved = True
+            except OSError:
+                pass  # занято или нет прав — ipatool скачает заново
+    with contextlib.suppress(OSError):
+        old.rmdir()  # только пустую: если там что-то ещё, это не наше
+    return moved
 
 
 def sha256_file(path):
@@ -66,7 +81,7 @@ def seed_unicorn():
     src = bundled("libunicorn.dll")
     if not src:
         return False
-    dest = ipatool_cache_root() / "unicorn" / UNICORN_VERSION / UNICORN_SHA256 / "libunicorn.dll"
+    dest = core.IPATOOL_CACHE / "unicorn" / UNICORN_VERSION / UNICORN_SHA256 / "libunicorn.dll"
     try:
         if dest.exists() and sha256_file(dest) == UNICORN_SHA256:
             return False
@@ -81,7 +96,7 @@ def seed_unicorn():
 
 def sap_ready():
     """Скачаны ли уже служебные файлы Apple, нужные ipatool для входа."""
-    d = ipatool_cache_root() / "sap" / "apple-assets-v2"
+    d = core.IPATOOL_CACHE / "sap" / "apple-assets-v2"
     try:
         return d.is_dir() and any(d.iterdir())
     except OSError:
@@ -288,8 +303,8 @@ def in_session_copies(items, fn, workers, lock=None):
     """fn(item, env) для каждого item в нескольких потоках: запрос к Apple ждёт сеть 1–2 с, так быстрее.
 
     ipatool хранит сессию и cookies в ~/.ipatool, и параллельные процессы портят общие файлы (падение
-    с panic), поэтому у каждого потока своя копия сессии во временной папке; env — окружение с этой папкой.
-    Копии удаляются в конце (и при следующем запуске программы, если она упала — см. wipe_session).
+    с panic), поэтому у каждого потока своя копия сессии во временной папке внутри SCAN_ROOT; env — окружение
+    с этой папкой. Копии удаляются в конце (и при следующем запуске программы, если она упала — см. wipe_session).
     lock — блокировка основной сессии: копируем её, только когда ipatool в неё не пишет.
     """
     items = list(items)
@@ -297,7 +312,8 @@ def in_session_copies(items, fn, workers, lock=None):
         return
     n = max(1, min(workers, len(items)))
     src_dir = core.IPATOOL_HOME / ".ipatool"
-    root = Path(tempfile.mkdtemp(prefix="restore_scan_"))
+    SCAN_ROOT.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(dir=SCAN_ROOT))
     envs = queue.Queue()
     try:
         with lock or contextlib.nullcontext():
@@ -307,9 +323,7 @@ def in_session_copies(items, fn, workers, lock=None):
                 h.mkdir()
                 if src_dir.exists():
                     shutil.copytree(src_dir, h / ".ipatool", ignore=shutil.ignore_patterns("*.lock"))
-                # ipatool на Windows берёт домашнюю папку из HOMEDRIVE+HOMEPATH, на остальных ОС из HOME
-                drive, rest = os.path.splitdrive(str(h))
-                envs.put(dict(os.environ, USERPROFILE=str(h), HOME=str(h), HOMEDRIVE=drive, HOMEPATH=rest))
+                envs.put(core.ipatool_env(h))
 
         def one(item):
             env = envs.get()
@@ -322,6 +336,12 @@ def in_session_copies(items, fn, workers, lock=None):
             list(pool.map(one, items))
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def scan_copies():
+    """Папки с копиями сессии от in_session_copies, в том числе оставшиеся после сбоя (и от версий до 1.2.0)."""
+    found = list(SCAN_ROOT.glob("*")) if SCAN_ROOT.is_dir() else []
+    return found + list(Path(tempfile.gettempdir()).glob("restore_scan_*"))
 
 
 def list_versions_cmd(ipatool, kc, app_id):

@@ -31,6 +31,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -47,12 +48,13 @@ HERE = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resol
 _CSV = "removed_ru_appstore_app_ids.csv"
 # CSV рядом с программой имеет приоритет над встроенным: его можно править
 CATALOG = HERE / _CSV if (HERE / _CSV).exists() else BUNDLE / _CSV
-__version__ = "1.1.0"  # X.Y.Z; выпуск — тег vX.Y.Z и раздел в CHANGELOG.md (см. tools/release.py)
+__version__ = "1.2.0"  # X.Y.Z; выпуск — тег vX.Y.Z и раздел в CHANGELOG.md (см. tools/release.py)
 APP_NAME = "Restore"
 
 
 def _data_dir():
-    """Служебные файлы программы: отдельная папка, ничего не смешивается с другими программами."""
+    """Служебные файлы программы: одна папка на всё (кэш ipatool, папка pymobiledevice3 и временные копии сессии
+    тоже здесь), ничего не смешивается с другими программами и не разбросано по профилю."""
     if sys.platform.startswith("win"):
         import os
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
@@ -64,12 +66,10 @@ def _data_dir():
 
 
 def _writable(folder):
+    """Можно ли писать в папку. Проба — временный файл, который удаляется при закрытии; папки не создаются."""
     try:
-        folder.mkdir(parents=True, exist_ok=True)
-        probe = folder / ".write_test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
-        return True
+        with tempfile.TemporaryFile(dir=folder):
+            return True
     except OSError:
         return False
 
@@ -77,9 +77,12 @@ def _writable(folder):
 DATA_DIR = _data_dir()
 # ipatool получает свою «домашнюю папку»: его сессия не трогает ~/.ipatool пользователя
 IPATOOL_HOME = DATA_DIR / "ipatool-home"
-# .ipa: у портативной версии — в папке «ipa» рядом с exe, у установленной — в «Документы\\Restore\\ipa»
-INSTALLED = (HERE / "installed.txt").exists()  # файл кладёт установщик
-OUT_DIR = HERE / "ipa" if (not INSTALLED and _writable(HERE / "ipa")) else Path.home() / "Documents" / APP_NAME / "ipa"
+# кэш ipatool (Unicorn, служебные файлы Apple для входа). Go кладёт его в os.UserCacheDir()/ipatool, а
+# ipatool_env() подставляет вместо него DATA_DIR: выходит DATA_DIR\ipatool, а не %LOCALAPPDATA%\ipatool
+IPATOOL_CACHE = (IPATOOL_HOME / "Library" / "Caches" if sys.platform == "darwin" else DATA_DIR) / "ipatool"
+# .ipa — в папке «ipa» рядом с exe (появляется при первом скачивании); если писать туда нельзя (exe лежит
+# в Program Files и т. п.) — в «Документы\\Restore\\ipa»
+OUT_DIR = HERE / "ipa" if (HERE / "ipa").is_dir() or _writable(HERE) else Path.home() / "Documents" / APP_NAME / "ipa"
 # пароль к зашифрованному файлу сессии; GUI задаёт случайный на каждый запуск и нигде его не хранит
 SESSION_PASSPHRASE = None
 # у консольной версии команды — отдельные процессы, поэтому пароль к сессии лежит в файле (удаляет `logout`)
@@ -138,13 +141,15 @@ def masked(cmd):
     return " ".join(shown)
 
 
-def ipatool_env():
-    """Окружение для ipatool: своя домашняя папка (на Windows ipatool берёт её из HOMEDRIVE+HOMEPATH)."""
+def ipatool_env(home=None):
+    """Окружение для ipatool: своя домашняя папка home (по умолчанию IPATOOL_HOME; на Windows ipatool берёт её
+    из HOMEDRIVE+HOMEPATH) и свой кэш IPATOOL_CACHE (Go ищет его в %LOCALAPPDATA%, на Linux — в XDG_CACHE_HOME)."""
     import os
-    IPATOOL_HOME.mkdir(parents=True, exist_ok=True)
-    drive, rest = os.path.splitdrive(str(IPATOOL_HOME))
-    return dict(os.environ, HOME=str(IPATOOL_HOME), USERPROFILE=str(IPATOOL_HOME), HOMEDRIVE=drive,
-                HOMEPATH=rest or "\\")
+    home = Path(home or IPATOOL_HOME)
+    home.mkdir(parents=True, exist_ok=True)
+    drive, rest = os.path.splitdrive(str(home))
+    return dict(os.environ, HOME=str(home), USERPROFILE=str(home), HOMEDRIVE=drive, HOMEPATH=rest or "\\",
+                LOCALAPPDATA=str(DATA_DIR), XDG_CACHE_HOME=str(DATA_DIR))
 
 
 def is_ipatool(cmd):

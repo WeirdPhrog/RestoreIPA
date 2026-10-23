@@ -1,0 +1,10 @@
+# Окружение сборки и тестов (Python 3.15, Windows x64): пакеты верхнего уровня. Точный список всех пакетов —
+# requirements-build.txt; его ставят build.ps1 и тесты на GitHub. После правки этого файла пересоберите список:
+#   uv pip compile requirements-build.in --override requirements-build.in -o requirements-build.txt --python-version 3.15 --python-platform x86_64-pc-windows-msvc --only-binary :all: --annotation-style line
+# (--override этим же файлом: строки ниже заменяют одноимённые требования любых пакетов — нужно для pylzss)
+PySide6-Essentials==6.12.0  # Qt Quick; дополнения PySide6 (WebEngine, 3D, PDF…) интерфейсу не нужны
+pymobiledevice3==11.41.2
+pyinstaller==6.22.3
+pillow==13.0.0  # tools/make_icon.py
+# pyimg4 (зависимость pymobiledevice3) требует ровно 0.3.4, а у неё нет колёс для Python 3.15
+pylzss==0.3.9

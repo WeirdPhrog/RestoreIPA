@@ -343,6 +343,132 @@ class Storage(unittest.TestCase):
         self.assertFalse(hasattr(storage, "save_email"), "email больше не должен записываться на диск")
 
 
+class Footprint(unittest.TestCase):
+    """Вне %LOCALAPPDATA%\\Restore (и папки «ipa» рядом с exe) программа ничего не оставляет."""
+
+    def test_writable_probe_leaves_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(core._writable(Path(d)))
+            self.assertEqual(os.listdir(d), [])
+            self.assertFalse(core._writable(Path(d) / "нет"))
+            self.assertFalse((Path(d) / "нет").exists(), "проба создала папку")
+
+    def test_ipatool_cache_and_scan_copies_inside_data_dir(self):
+        env = core.ipatool_env()
+        self.assertEqual((env["LOCALAPPDATA"], env["HOME"]), (str(core.DATA_DIR), str(core.IPATOOL_HOME)))
+        self.assertTrue(core.IPATOOL_CACHE.is_relative_to(core.DATA_DIR))
+        seen = []
+        apple.in_session_copies([1, 2], lambda i, env: seen.append(env), workers=2)
+        for env in seen:
+            self.assertEqual(env["LOCALAPPDATA"], str(core.DATA_DIR))
+            self.assertTrue(Path(env["HOME"]).is_relative_to(apple.SCAN_ROOT), env["HOME"])
+        self.assertEqual(apple.scan_copies(), [])
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "кэш ipatool в %LOCALAPPDATA% — только на Windows")
+    def test_adopt_old_cache(self):
+        old = Path(os.environ["LOCALAPPDATA"]) / "ipatool"
+        (old / "sap" / "apple-assets-v2").mkdir(parents=True)
+        (old / "sap" / "apple-assets-v2" / "a.bin").write_bytes(b"1")
+        (old / "unicorn").mkdir()
+        try:
+            self.assertTrue(apple.adopt_old_cache())
+            self.assertTrue(apple.sap_ready())
+            self.assertTrue((core.IPATOOL_CACHE / "unicorn").is_dir())
+            self.assertFalse(old.exists(), "пустая старая папка осталась")
+            (old / "sap").mkdir(parents=True)  # уже перенесено: второй раз не затирает
+            (old / "other").mkdir()
+            self.assertFalse(apple.adopt_old_cache())
+            self.assertEqual(sorted(p.name for p in old.iterdir()), ["other", "sap"], "тронуто чужое")
+        finally:
+            shutil.rmtree(old, ignore_errors=True)
+            shutil.rmtree(core.IPATOOL_CACHE, ignore_errors=True)
+
+    def test_pymobiledevice3_folder_inside_data_dir(self):
+        import pymobiledevice3.common as pmd_common
+        saved = pmd_common._HOMEFOLDER
+        try:
+            device.own_pmd_folder()
+            self.assertEqual(pmd_common.get_home_folder(), core.DATA_DIR / "pymobiledevice3")
+            self.assertFalse((Path.home() / ".pymobiledevice3").exists())
+        finally:
+            pmd_common._HOMEFOLDER = saved
+
+    def test_remove_old_folders(self):
+        (core.DATA_DIR / "cache" / "qmlcache").mkdir(parents=True)
+        (core.DATA_DIR / "cache" / "qmlcache" / "x.qmlc").write_bytes(b"")
+        (Path.home() / ".pymobiledevice3").mkdir(exist_ok=True)
+        mine = Path.home() / ".restore_appstore"
+        mine.mkdir()
+        (mine / "чужое.txt").write_text("", encoding="utf-8")
+        try:
+            storage.remove_old_folders()
+            self.assertFalse((core.DATA_DIR / "cache").exists())
+            self.assertFalse((Path.home() / ".pymobiledevice3").exists())
+            self.assertTrue((mine / "чужое.txt").exists(), "удалена непустая папка")
+        finally:
+            shutil.rmtree(mine, ignore_errors=True)
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "занятый файл нельзя удалить только на Windows")
+    def test_remove_stale_unpacked(self):
+        with tempfile.TemporaryDirectory() as d:
+            def unpacked(name, ours=True, age=3600):
+                p = Path(d) / name
+                (p / "restore_gui" / "qml").mkdir(parents=True)
+                if ours:
+                    (p / core._CSV).write_text("", encoding="utf-8")
+                    (p / "restore_gui" / "qml" / "Main.qml").write_text("", encoding="utf-8")
+                for dll in ("python3.dll", "python315.dll"):
+                    (p / dll).write_bytes(b"")
+                os.utime(p, (time.time() - age,) * 2)
+                return p
+
+            me, stale, fresh = unpacked("_MEI1"), unpacked("_MEI2"), unpacked("_MEI3", age=0)
+            foreign, busy = unpacked("_MEI4", ours=False), unpacked("_MEI5")
+            with open(busy / "python315.dll", "rb"), mock.patch.object(core, "FROZEN", True), \
+                    mock.patch.object(sys, "_MEIPASS", str(me), create=True):
+                storage.remove_stale_unpacked()
+            self.assertFalse(stale.exists())
+            for p in (me, fresh, foreign, busy):
+                self.assertTrue((p / "python3.dll").exists(), p.name)
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "реестр — только на Windows")
+    def test_registry_untouched(self):
+        import uuid
+        import winreg
+        root = rf"Software\RestoreTests-{uuid.uuid4().hex}"
+        hk = winreg.HKEY_CURRENT_USER
+
+        def delete_tree(path):
+            with contextlib.suppress(OSError), winreg.OpenKey(hk, path) as key:
+                for sub in [winreg.EnumKey(key, i) for i in range(winreg.QueryInfoKey(key)[0])]:
+                    delete_tree(path + "\\" + sub)
+            with contextlib.suppress(OSError):
+                winreg.DeleteKey(hk, path)
+
+        try:
+            with storage.registry_untouched(root):  # раздела не было — не остаётся ничего
+                with winreg.CreateKey(hk, root + r"\OrganizationDefaults\FileDialog") as key:
+                    winreg.SetValueEx(key, "lastVisited", 0, winreg.REG_SZ, "file:///C:/x")
+            self.assertRaises(OSError, winreg.OpenKey, hk, root)
+
+            with winreg.CreateKey(hk, root + r"\FileDialog") as key:  # раздел был — значения как до блока
+                winreg.SetValueEx(key, "lastVisited", 0, winreg.REG_SZ, "до")
+                winreg.SetValueEx(key, "history", 0, winreg.REG_MULTI_SZ, ["a", "b"])
+            with storage.registry_untouched(root):
+                with winreg.CreateKey(hk, root + r"\FileDialog") as key:
+                    winreg.SetValueEx(key, "lastVisited", 0, winreg.REG_SZ, "после")
+                    winreg.SetValueEx(key, "viewMode", 0, winreg.REG_SZ, "Detail")
+                    winreg.DeleteValue(key, "history")
+                winreg.CreateKey(hk, root + r"\Qt\customColors").Close()
+            with winreg.OpenKey(hk, root + r"\FileDialog") as key:
+                values = {winreg.EnumValue(key, i)[0]: winreg.EnumValue(key, i)[1]
+                          for i in range(winreg.QueryInfoKey(key)[1])}
+            self.assertEqual(values, {"lastVisited": "до", "history": ["a", "b"]})
+            self.assertRaises(OSError, winreg.OpenKey, hk, root + r"\Qt")
+        finally:
+            delete_tree(root)
+
+
 def load_release_tool():
     import importlib.util
     path = Path(__file__).resolve().parent.parent / "tools" / "release.py"
@@ -381,6 +507,17 @@ class Release(unittest.TestCase):
         for f in files:
             text = f.read_text(encoding="utf-8").lower()
             for word in ("cloudtips", "supporturl", "segno", "поддержать разработчика"):
+                self.assertFalse(word in text, f"{f.name}: осталось «{word}»")
+
+    def test_no_installer_leftovers(self):
+        """Программа — один exe без установщика: ни Inno Setup, ни сборки папкой, ни метки установки."""
+        root = Path(__file__).resolve().parent.parent
+        self.assertFalse((root / "installer").exists())
+        files = [*root.glob("*.py"), *root.glob("restore_gui/*.py"), *root.glob(".github/workflows/*.yml"),
+                 root / "RestoreAppStore.spec", root / "build.ps1", root / "README.md"]
+        for f in files:
+            text = f.read_text(encoding="utf-8-sig").lower()
+            for word in ("inno setup", "iscc", "restoresetup", "installed.txt", "restore_onedir", "skipinstaller"):
                 self.assertFalse(word in text, f"{f.name}: осталось «{word}»")
 
 

@@ -1,8 +1,14 @@
 """Служебные файлы программы (%LOCALAPPDATA%\\Restore) и скачанные .ipa. Ни пароль, ни email Apple ID здесь
-не хранятся."""
+не хранятся. Вне этой папки программа следов не оставляет: ниже же — уборка того, что оставляют Qt, распаковка exe
+и прежние версии."""
+import contextlib
 import json
 import re
+import shutil
+import sys
 import threading
+import time
+from pathlib import Path
 
 import restore_apps as core
 
@@ -83,3 +89,95 @@ def archived(app_id):
     files = [p for p in core.OUT_DIR.glob(f"*_{app_id}*.ipa")
              if re.search(rf"_{app_id}(_v\d+)?\.ipa$", p.name)]
     return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+# ---------- следы вне папки программы ----------
+QT_REGISTRY = r"Software\QtProject"  # QSettings «QtProject»: сюда QFileDialog пишет последнюю папку и историю
+STALE_AFTER = 600  # с; папка распаковки моложе может принадлежать exe, который распаковывается прямо сейчас
+
+
+def remove_old_folders():
+    """Папки, которые оставляли версии до 1.2.0: кэш QML (DATA_DIR\\cache рос с каждым запуском exe, теперь он
+    отключён — см. app.qt_environment), пустые ~/.restore_appstore и ~/.pymobiledevice3 (своя папка
+    pymobiledevice3 теперь в DATA_DIR — см. device.own_pmd_folder). Непустые папки в профиле не трогаем."""
+    shutil.rmtree(core.DATA_DIR / "cache", ignore_errors=True)
+    for old in (Path.home() / ".restore_appstore", Path.home() / ".pymobiledevice3"):
+        with contextlib.suppress(OSError):
+            old.rmdir()
+
+
+def remove_stale_unpacked():
+    """Удалить брошенные папки распаковки этого exe во %TEMP%.
+
+    exe одним файлом при каждом запуске распаковывается во %TEMP%\\_MEI… и при выходе удаляет эту папку сам.
+    Если же процесс убили (диспетчер задач, отключение питания), папка остаётся навсегда. Удаляем только свои
+    (в них наш интерфейс и каталог), не моложе STALE_AFTER и не занятые: у работающего экземпляра загружена
+    python3*.dll, а загруженную DLL Windows удалить не даёт (переименовать папку — даёт, так что это не проверка).
+    """
+    me = Path(getattr(sys, "_MEIPASS", ""))
+    if not core.FROZEN or not me.name.startswith("_MEI"):
+        return
+    now = time.time()
+    for d in me.parent.glob("_MEI*"):
+        try:
+            if (d == me or now - d.stat().st_mtime < STALE_AFTER or not (d / core._CSV).is_file()
+                    or not (d / "restore_gui" / "qml" / "Main.qml").is_file()):
+                continue
+            # python3XX.dll — первой: её загрузчик exe грузит сразу, python3.dll — только позже, с модулями Qt
+            for dll in sorted(d.glob("python3*.dll"), key=lambda p: -len(p.name)):
+                dll.unlink()
+        except OSError:
+            continue  # папка работающего экземпляра
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def registry_untouched(path=QT_REGISTRY):
+    """После блока раздел реестра HKCU\\path — такой же, как до него.
+
+    QFileDialog при закрытии (даже системного окна Windows) записывает последнюю папку и историю в
+    HKCU\\Software\\QtProject — общий раздел всех программ на Qt. Созданное за время блока удаляем, изменённое
+    возвращаем: значения других программ остаются как были, своих следов программа там не оставляет.
+    """
+    if not sys.platform.startswith("win"):
+        yield
+        return
+    before = _reg_snapshot(path)
+    try:
+        yield
+    finally:
+        _reg_restore(path, before)
+
+
+def _reg_snapshot(path):
+    """{подраздел: {имя: (значение, тип)}} — раздел HKCU\\path со всеми подразделами; {} — раздела нет."""
+    import winreg
+    tree, todo = {}, [path]
+    while todo:
+        sub = todo.pop()
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub)
+        except OSError:
+            continue
+        with key:
+            n_keys, n_values, _ = winreg.QueryInfoKey(key)
+            values = (winreg.EnumValue(key, i) for i in range(n_values))
+            tree[sub] = {name: (data, kind) for name, data, kind in values}
+            todo += [sub + "\\" + winreg.EnumKey(key, i) for i in range(n_keys)]
+    return tree
+
+
+def _reg_restore(path, before):
+    import winreg
+    after = _reg_snapshot(path)
+    for sub in sorted(after, key=len, reverse=True):  # подразделы — раньше родителей: DeleteKey удаляет только пустой
+        with contextlib.suppress(OSError):
+            if sub not in before:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+                continue
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub, 0, winreg.KEY_SET_VALUE) as key:
+                for name in after[sub].keys() - before[sub].keys():
+                    winreg.DeleteValue(key, name)
+                for name, (data, kind) in before[sub].items():
+                    if after[sub].get(name) != (data, kind):
+                        winreg.SetValueEx(key, name, 0, kind, data)

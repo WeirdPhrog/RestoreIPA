@@ -8,7 +8,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -18,9 +17,10 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, ProcsClosed, bundled, clear_stale_locks, clip, explain_error,
-                    fatal_error, fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd,
-                    ownership, parse_purchases, parse_versions, popen, run_quiet, sap_ready, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, ProcsClosed, adopt_old_cache, bundled, clear_stale_locks, clip,
+                    explain_error, fatal_error, fetch_available, forget, in_session_copies, kill_procs,
+                    list_versions_cmd, ownership, parse_purchases, parse_versions, popen, run_quiet, sap_ready,
+                    scan_copies, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 SCAN_WORKERS = 4  # параллельных проверок владения
@@ -245,6 +245,8 @@ class TasksMixin:
         return rc == 0 and not re.search(r"failed|not logged|\bERR\b", out, re.I)
 
     def _prepare_engine(self):
+        if adopt_old_cache():
+            self.log("Служебные файлы ipatool перенесены из %LOCALAPPDATA%\\ipatool в папку программы.")
         if seed_unicorn():
             self.log("Эмулятор для входа (Unicorn 2.1.4) подготовлен из встроенной копии — GitHub не нужен.")
 
@@ -266,7 +268,7 @@ class TasksMixin:
                 run_quiet([ipatool, *core.keychain_args(), "auth", "revoke"], timeout=15, tag="wipe")
             shutil.rmtree(folder, ignore_errors=True)
             # копии сессии для параллельных запросов (apple.in_session_copies), в т.ч. оставшиеся после сбоя
-            for d in Path(tempfile.gettempdir()).glob("restore_scan_*"):
+            for d in scan_copies():
                 existed = existed or (d / "w0" / ".ipatool").exists()
                 shutil.rmtree(d, ignore_errors=True)
             return existed
@@ -394,7 +396,7 @@ class TasksMixin:
                      "эти приложения.")
 
     def task_download(self, ipatool, app_id, name, purchase, version=None, fallback=False):
-        core.OUT_DIR.mkdir(parents=True, exist_ok=True)  # у установленной версии это Документы\Restore\ipa
+        core.OUT_DIR.mkdir(parents=True, exist_ok=True)  # «ipa» рядом с exe или Документы\Restore\ipa
         suffix = f"_v{version}" if version else ""
         dest = core.OUT_DIR / f"{core.slug(name)}_{app_id}{suffix}.ipa"
         if version:
