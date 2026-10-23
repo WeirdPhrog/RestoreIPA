@@ -1,0 +1,11 @@
+# сборка (build.ps1)
+build/
+dist/
+
+# скачанные .ipa: внутри Apple ID и имя владельца
+ipa/
+*.ipa
+
+# Python
+__pycache__/
+*.py[cod]
