@@ -43,6 +43,19 @@ def record_download(app_id, version):
         _write(HISTORY, json.dumps(h))
 
 
+def forget_download(app_id, version):
+    """Убрать версию из истории скачиваний (её файл удалён)."""
+    with _LOCK:
+        h = load_history()
+        lst = h.get(str(app_id), [])
+        if str(version) not in lst:
+            return
+        lst.remove(str(version))
+        if not lst:
+            del h[str(app_id)]
+        _write(HISTORY, json.dumps(h))
+
+
 def load_meta():
     return _read_json(META_CACHE)
 

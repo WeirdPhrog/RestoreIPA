@@ -487,7 +487,7 @@ class TasksMixin:
         lo, hi, best = 1, len(versions) - 1, None
         tries = 0
         before = set(storage.archived(app_id))
-        probes = []
+        probes = []  # (путь, ID версии)
         try:
             while lo <= hi and tries < budget and not self.stop_flag:
                 mid = (lo + hi) // 2
@@ -495,8 +495,11 @@ class TasksMixin:
                 self.log(f"Подбор версии для iOS {ios}: проверяю вариант {mid + 1} из {len(versions)}…")
                 path = self.task_download(ipatool, app_id, name, False, versions[mid])
                 if not path:
+                    if best and not self.stop_flag:  # подходящая уже скачана — не выбрасываем её из-за сбоя сети
+                        self.log("Следующую пробу скачать не удалось — беру лучшую из уже проверенных версий.")
+                        break
                     return None
-                probes.append(path)
+                probes.append((path, versions[mid]))
                 plist = ipa_info(path)
                 need, shown = plist.get("MinimumOSVersion"), plist.get("CFBundleShortVersionString")
                 if need and vtuple(need) > vtuple(ios):
@@ -505,7 +508,7 @@ class TasksMixin:
                     best = (path, shown, need)
                     hi = mid - 1
         finally:
-            self.drop_probes([p for p in probes if p not in before and (not best or p != best[0])])
+            self.drop_probes(app_id, [(p, v) for p, v in probes if p not in before and (not best or p != best[0])])
         if not best:
             self.log("Не нашлось версии этого приложения для вашей iOS: даже старые требуют iOS новее, "
                      "или Apple отдал не все версии.")
@@ -513,10 +516,12 @@ class TasksMixin:
         self.log(f"Подходит версия {best[1] or '?'} (нужна iOS {best[2] or '?'}).")
         return best[0]
 
-    def drop_probes(self, paths):
-        """Удалить IPA, скачанные только для подбора версии."""
+    def drop_probes(self, app_id, probes):
+        """Удалить IPA, скачанные только для подбора версии [(путь, ID версии)], и их записи в истории:
+        иначе панель показывала бы их как «скачано через программу», хотя файла уже нет."""
         freed = 0
-        for p in paths:
+        for p, version in probes:
+            storage.forget_download(app_id, version)
             try:
                 size = p.stat().st_size
                 p.unlink()
