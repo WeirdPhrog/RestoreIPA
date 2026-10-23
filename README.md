@@ -94,7 +94,7 @@
 Нужен Python 3.12 и [ipatool](https://github.com/majd/ipatool/releases): для окна — в `PATH` или рядом со скриптами, для консольной версии — в `PATH`.
 
 ```bash
-py -V:3.12 -m pip install PySide6 pymobiledevice3 segno
+py -V:3.12 -m pip install PySide6 pymobiledevice3
 ```
 
 ```bash
@@ -154,10 +154,6 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 Из Qt в сборку попадает только то, что нужно интерфейсу (список исключений — `DROP` в `RestoreAppStore.spec`). После сборки оба exe запускаются с ключом `--check-ui`: интерфейс загружается без показа окна, и если из Qt вырезано что-то нужное, сборка останавливается.
 
 Версия программы задаётся в `restore_apps.py` (`__version__`).
-
-## Поддержать разработчика
-
-Restore бесплатная. Если она помогла вернуть нужное приложение, можно поблагодарить через [CloudTips](https://pay.cloudtips.ru/p/d4214684) — та же кнопка есть в программе (слева внизу).
 
 ## Лицензия
 

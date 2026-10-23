@@ -13,12 +13,12 @@ from PyInstaller.utils.hooks import collect_all
 ONEDIR = os.environ.get("RESTORE_ONEDIR") == "1"
 
 RES = "build/res"
-datas = [("removed_ru_appstore_app_ids.csv", "."), ("assets/icon.ico", "."), ("assets/cloudtips_qr.png", "."),
+datas = [("removed_ru_appstore_app_ids.csv", "."), ("assets/icon.ico", "."),
          (f"{RES}/UNICORN_COPYING.txt", "."),
          ("restore_gui/qml", "restore_gui/qml")]  # интерфейс (QML) — рядом с модулями пакета, см. app.QML_DIR
 binaries = [(f"{RES}/ipatool.exe", "."), (f"{RES}/libunicorn.dll", ".")]
-# segno — QR-код в «Поддержать», если нет картинки; модули Qt ниже нужны QML и импортируются не из Python
-hiddenimports = ["restore_apps", "segno", "PySide6.QtQuick", "PySide6.QtQuickControls2"]
+# модули Qt ниже нужны QML и импортируются не из Python
+hiddenimports = ["restore_apps", "PySide6.QtQuick", "PySide6.QtQuickControls2"]
 # pymobiledevice3 встроен для режима `exe --pmd` (установка IPA); подмодули он грузит динамически.
 # pytun_pmd3 — его зависимость с wintun.dll внутри пакета: без collect_all dll не попадает в сборку
 # и `--pmd lockdown …` падает при импорте.

@@ -25,7 +25,6 @@ ApplicationWindow {
             Layout.preferredWidth: 236
             onHelpRequested: dialogs.openHelp()
             onSettingsRequested: dialogs.openSettings()
-            onSupportRequested: dialogs.openSupport()
         }
 
         ColumnLayout {

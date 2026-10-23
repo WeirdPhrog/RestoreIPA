@@ -10,7 +10,6 @@
 | pytun-pmd3 | 3.0.3 | GPL-3.0-or-later | зависимость pymobiledevice3 (сетевые туннели к iPhone) | https://github.com/doronz88/pytun-pmd3 |
 | Wintun (`wintun.dll`, внутри pytun-pmd3) | — | Prebuilt Binaries License (WireGuard LLC), текст рядом с dll | драйвер туннеля для pytun-pmd3 | https://www.wintun.net |
 | Qt for Python (PySide6) и библиотеки Qt 6 | 6.12.0 | LGPL-3.0 | интерфейс (Qt Quick) | https://code.qt.io/cgit/pyside/pyside-setup.git, https://code.qt.io |
-| segno | 1.6.6 | BSD-3-Clause | QR-код в окне «Поддержать разработчика» | https://github.com/heuer/segno |
 | Python | 3.12 | PSF License | среда выполнения | https://www.python.org |
 | PyInstaller (загрузчик) | 6.22.3 | GPL-2.0-or-later с исключением для сборок | упаковка в exe | https://github.com/pyinstaller/pyinstaller |
 

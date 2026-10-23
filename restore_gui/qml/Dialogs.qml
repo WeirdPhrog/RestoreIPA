@@ -1,4 +1,4 @@
-// Все всплывающие окна: вход, код 2FA, справка, настройки, поддержка, сообщения.
+// Все всплывающие окна: вход, код 2FA, справка, настройки, сообщения.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -6,10 +6,9 @@ import QtQuick.Layouts
 Item {
     id: dialogs
     readonly property bool anyOpen: login.visible || ask.visible || help.visible || settings.visible
-                                    || support.visible || noticeBox.visible
+                                    || noticeBox.visible
     function openHelp() { helpText.text = backend.helpText(); help.open() }
     function openSettings() { settings.open() }
-    function openSupport() { copyBtn.text = "Скопировать ссылку"; support.open() }
     function notice(title, text) { noticeBox.title = title; noticeText.text = text; noticeBox.open() }
 
     // ---------- вход ----------
@@ -87,31 +86,6 @@ Item {
         Toggle { text: "Получать лицензию, если приложение ещё продаётся в App Store"; checked: backend.purchase
                  onToggled: backend.purchase = checked }
         Btn { text: "Готово"; lock: false; Layout.alignment: Qt.AlignRight; onClicked: settings.close() }
-    }
-
-    // ---------- поддержать разработчика ----------
-    Modal {
-        id: support
-        title: "Поддержать разработчика"
-        width: 420
-        Text { text: "Restore бесплатная. Если она помогла вернуть нужное приложение, можно поблагодарить "
-                     + "разработчика через CloudTips любой суммой."
-               color: P.text; font.family: P.font; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-        Btn { text: "Отблагодарить по СБП или картой РФ"; kind: "primary"; lock: false; implicitHeight: 44
-              Layout.fillWidth: true
-              onClicked: backend.openUrl(backend.supportUrl) }
-        Text { text: "или наведите камеру телефона на QR-код"; color: P.muted; font.family: P.font; font.pixelSize: 12
-               Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4 }
-        Image { source: backend.qrUrl; visible: backend.qrUrl !== ""; Layout.preferredWidth: 220
-                Layout.preferredHeight: 220; Layout.alignment: Qt.AlignHCenter; fillMode: Image.PreserveAspectFit
-                smooth: true; mipmap: true }
-        Text { text: "QR-код недоступен: pip install segno"; visible: backend.qrUrl === ""; color: P.warn
-               font.family: P.font; font.pixelSize: 11; Layout.alignment: Qt.AlignHCenter }
-        Text { text: backend.supportUrl; color: P.muted; font.family: P.font; font.pixelSize: 11
-               Layout.alignment: Qt.AlignHCenter }
-        Btn { id: copyBtn; text: "Скопировать ссылку"; kind: "ghost"; lock: false; implicitHeight: 32
-              Layout.alignment: Qt.AlignHCenter
-              onClicked: { backend.copyText(backend.supportUrl); text = "Ссылка скопирована" } }
     }
 
     // ---------- сообщение ----------

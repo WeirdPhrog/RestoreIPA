@@ -24,10 +24,6 @@ from .icons import IconLoader, cached
 from .models import RowsModel
 from .tasks import TasksMixin
 
-# страница CloudTips для «Поддержать разработчика»; пустая строка — кнопка не показывается.
-# assets/cloudtips_qr.png — фирменный QR CloudTips на эту же ссылку; сменили ссылку — замените или удалите
-# картинку (без неё QR рисуется сам).
-SUPPORT_URL = "https://pay.cloudtips.ru/p/d4214684"
 LOG_FLUSH_MS = 100  # журнал копится и уходит в окно одним куском: ipatool при скачивании пишет сотни строк
 
 APP_KEYS = ("appId", "title", "sub", "letter", "tint", "icon", "status", "statusKind", "selected", "copies")
@@ -100,8 +96,10 @@ class Backend(QObject, TasksMixin, DetailMixin):
         for k, v in self.DEFAULTS.items():
             setattr(self, "_" + k, v)
         core.SESSION_PASSPHRASE = secrets.token_urlsafe(32)  # только в памяти, на диск не пишется
-        # пароль к сессии открытым текстом: из ранних версий и от консольной версии (её сессию GUI всё равно стирает)
-        for old in (Path.home() / ".restore_appstore" / "keychain.pass", core.KEYCHAIN_PASS):
+        # пароль к сессии открытым текстом: из ранних версий и от консольной версии (её сессию GUI всё равно стирает);
+        # support_qr.png — QR-код для доната из версий до 1.1.0 (окно доната убрано)
+        for old in (Path.home() / ".restore_appstore" / "keychain.pass", core.KEYCHAIN_PASS,
+                    core.DATA_DIR / "support_qr.png"):
             try:
                 old.unlink()
             except OSError:
@@ -166,7 +164,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
     versions = Property(QObject, lambda self: self._versions, constant=True)
     ipaFiles = Property(QObject, lambda self: self._ipa, constant=True)
     categories = Property("QVariantList", lambda self: ["Все"] + self.catalog.categories, constant=True)
-    supportUrl = Property(str, lambda self: SUPPORT_URL, constant=True)
     version = Property(str, lambda self: core.__version__, constant=True)
     palette = Property("QVariantMap", lambda self: theme.QML, constant=True)
 
@@ -174,21 +171,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
     def greeting(self):
         h = datetime.datetime.now().hour
         return "Доброй ночи" if h < 5 else "Доброе утро" if h < 12 else "Добрый день" if h < 18 else "Добрый вечер"
-
-    @Property(str, constant=True)
-    def qrUrl(self):
-        """Фирменный QR CloudTips (assets/cloudtips_qr.png); без него — QR по ссылке через segno."""
-        for p in (core.BUNDLE / "cloudtips_qr.png", core.HERE / "assets" / "cloudtips_qr.png"):
-            if p.is_file():
-                return QUrl.fromLocalFile(str(p)).toString()
-        try:
-            import segno
-            p = core.DATA_DIR / "support_qr.png"
-            core.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            segno.make(SUPPORT_URL, error="m").save(str(p), scale=8, border=4)
-            return QUrl.fromLocalFile(str(p)).toString()
-        except Exception:  # noqa: BLE001 — нет segno: в окне останется ссылка
-            return ""
 
     # ---------- связь с рабочими потоками ----------
     def post(self, fn):
@@ -505,11 +487,6 @@ class Backend(QObject, TasksMixin, DetailMixin):
         core.OUT_DIR.mkdir(parents=True, exist_ok=True)
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(core.OUT_DIR))):
             self.log(f"Не удалось открыть папку: {core.OUT_DIR}")
-
-    @Slot(str)
-    def openUrl(self, url):
-        if not QDesktopServices.openUrl(QUrl(url)):
-            self.log(f"Не удалось открыть браузер. Ссылка: {url}")
 
     @Slot(str)
     def copyText(self, text):

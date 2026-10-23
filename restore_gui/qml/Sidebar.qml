@@ -7,7 +7,6 @@ Rectangle {
     id: side
     signal helpRequested()
     signal settingsRequested()
-    signal supportRequested()
     color: P.rail
 
     ColumnLayout {
@@ -53,13 +52,6 @@ Rectangle {
 
         Item { Layout.fillHeight: true }
 
-        Btn {
-            visible: backend.supportUrl !== ""
-            text: "♡ Поддержать разработчика"
-            kind: "ghost"; lock: false; implicitHeight: 34; leftPadding: 6; rightPadding: 6
-            Layout.fillWidth: true; Layout.bottomMargin: 10
-            onClicked: side.supportRequested()
-        }
         Text {
             Layout.fillWidth: true; Layout.leftMargin: 6; Layout.bottomMargin: backend.loggedIn ? 0 : 8
             text: backend.loggedIn ? "Apple ID" : "Вход не выполнен"
