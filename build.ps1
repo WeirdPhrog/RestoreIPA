@@ -38,13 +38,25 @@ function Invoke-Native {
 }
 
 # --- окружение сборки ---
+function Test-Python312($exe) {
+    try {
+        & $exe -c "import sys; sys.exit(sys.version_info[:2] != (3, 12))" 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false  # нет такой программы (или заглушка python из Microsoft Store)
+    }
+}
+
 $py = "build\venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
     Write-Host "Создаю build\venv (Python 3.12)"
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        Invoke-Native py -V:3.12 -m venv build\venv
+    if (Test-Python312 "python") {
+        Invoke-Native python -m venv build\venv  # GitHub Actions: python 3.12 из setup-python
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        # в кавычках: иначе PowerShell передаёт «-V:3.12» двумя аргументами, «-V:» и «3.12»
+        Invoke-Native py '-V:3.12' -m venv build\venv
     } else {
-        Invoke-Native python -m venv build\venv  # без py launcher (GitHub Actions: python из setup-python)
+        throw "Нужен Python 3.12: py install 3.12 (или python 3.12 в PATH)"
     }
 }
 & $py -c "import sys; sys.exit(sys.version_info[:2] != (3, 12))"
