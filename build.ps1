@@ -120,7 +120,8 @@ if (-not $SkipInstaller) {
     $outputs += "dist\RestoreSetup-$version.exe"
 }
 
-# контрольные суммы — для страницы релиза
+# контрольные суммы — для страницы релиза. Переводы строк LF: с CRLF (как пишет Set-Content) `sha256sum -c`
+# в Git Bash и Linux принимает «\r» за часть имени файла и пишет, что файлы не найдены
 $sums = $outputs | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
-$sums | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+[IO.File]::WriteAllText((Join-Path $PWD "dist\SHA256SUMS.txt"), (($sums -join "`n") + "`n"), [Text.Encoding]::ASCII)
 $sums | ForEach-Object { Write-Host $_ }
