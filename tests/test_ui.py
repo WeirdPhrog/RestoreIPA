@@ -389,6 +389,43 @@ class Window(unittest.TestCase):
         self.pump()
         self.assertEqual(MESSAGES, [], "\n".join(MESSAGES))
 
+    def test_late_answer_from_before_login_keeps_new_session(self):
+        """Панель приложения спросила Apple до входа («failed to get account»), ответ дошёл уже после входа:
+        выхода нет, новая сессия остаётся (иначе запоздалый ответ стирал её)."""
+        b = self.backend
+        self.wait_idle()
+        started = []
+        saved = (b.post, b.start, b.loggedIn, b.account)
+        b.post, b.start = (lambda fn: fn()), (lambda label, fn, *a: started.append(fn))
+        try:
+            b.on_login_result(False, "")
+            before = b.session_gen  # запрос панели начат без входа
+            b.on_login_result(True, "someone@example.com")
+            b.session_lost(before)
+            b.hint("ERR failed to get account", before)
+            self.assertTrue(b.loggedIn)
+            self.assertEqual(started, [])
+        finally:
+            b.post, b.start = saved[:2]
+            b.loggedIn, b.account = saved[2:]
+
+    def test_purchases_without_session_shows_login_button(self):
+        """«Мои покупки»: ipatool ответил «failed to get account» — выход, кнопка «Войти» снова видна."""
+        b = self.backend
+        self.wait_idle()
+        started = []
+        saved = (b.post, b.start, b.stream, b.loggedIn, b.account)
+        b.post, b.start = (lambda fn: fn()), (lambda label, fn, *a: started.append(fn))
+        b.stream = lambda cmd, quiet_json=False: (1, 'ERR error="failed to get account: not found"\n')
+        try:
+            b.on_login_result(True, "someone@example.com")
+            b.task_purchases("ipatool")
+            self.assertFalse(b.loggedIn)
+            self.assertEqual(started, [b.task_logout])
+        finally:
+            b.post, b.start, b.stream = saved[:3]
+            b.loggedIn, b.account = saved[3:]
+
     def test_download_creates_missing_parent_folders(self):
         """Если рядом с exe писать нельзя, папка — Документы\\Restore\\ipa; если нет даже Restore, скачивание не падает."""
         import tempfile

@@ -19,10 +19,10 @@ import restore_apps as core
 
 from . import storage
 from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, NO_SESSION, SESSION_LOST, ProcsClosed, adopt_old_cache,
-                    apple_root_context, bundled, clear_stale_locks, clip, drop_old_sap, explain_error, fatal_error,
-                    fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd, ownership,
-                    parse_purchases, parse_versions, popen, run_quiet, sap_ready, scan_copies, seed_unicorn,
-                    tls_check)
+                    apple_root_context, bundled, clear_stale_locks, clip, drop_old_sap, env_proxy, env_urlopen,
+                    explain_error, fatal_error, fetch_available, forget, in_session_copies, kill_procs,
+                    list_versions_cmd, ownership, parse_purchases, parse_versions, popen, proxy_label, run_quiet,
+                    sap_ready, scan_copies, seed_unicorn, tls_check)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 # параллельных проверок владения: каждый ipatool 2.8 — до ~0,5 ГБ памяти и больше ядра процессора на 6–8 с
@@ -200,23 +200,30 @@ class TasksMixin:
         finally:
             self.dlock.release()
 
-    def hint(self, text):
+    def hint(self, text, gen=None):
+        """Объяснить ошибку ipatool в журнале. Если это «сессии нет» — выйти (session_lost; gen — как там)."""
         hints = explain_error(text)
         for h in hints:
             self.log("ⓘ " + h)
         if hints:
             self.post(self.open_log)
         if re.search(NO_SESSION, text or "", re.I):
-            self.session_lost()
+            self.session_lost(gen)
 
-    def session_lost(self):
+    def session_lost(self, gen=None):
         """Apple ответил, что входа нет или сессия истекла (SESSION_LOST, NO_SESSION). Кнопка «Войти» видна только
         без входа, поэтому выходим, как по кнопке «Выйти», — когда закончится текущая операция, оставаясь на той же
-        странице (открытая панель приложения показывает, что проверка не удалась). Можно звать из любого потока."""
-        self.post(lambda: self.when_idle(self._logout_lost_session))
+        странице (открытая панель приложения показывает, что проверка не удалась). Можно звать из любого потока.
 
-    def _logout_lost_session(self):
-        if self._loggedIn:  # несколько проверок могли сообщить об этом одновременно — выходим один раз
+        gen — self.session_gen на момент запроса к Apple. Ответ на запрос, начатый до входа или при прежнем входе
+        (панель приложения спрашивает Apple без очереди задач), к нынешней сессии не относится и её не трогает.
+        По умолчанию — нынешний номер: для задач, во время которых войти или выйти нельзя."""
+        gen = self.session_gen if gen is None else gen
+        self.post(lambda: self.when_idle(lambda: self._logout_lost_session(gen)))
+
+    def _logout_lost_session(self, gen):
+        # несколько проверок могли сообщить об этом одновременно — выходим один раз (дальше номер другой)
+        if self._loggedIn and gen == self.session_gen:
             self.log("Сессия Apple ID больше не действует — войдите заново: «Войти в Apple ID».")
             self.forget_account()
             self.start("Удаление недействующей сессии", self.task_logout)
@@ -305,6 +312,7 @@ class TasksMixin:
         self.log("Вы вышли из Apple ID, сессия и email удалены с компьютера.")
 
     def task_purchases(self, ipatool, country="ru"):
+        gen = self.session_gen  # при каком входе начата загрузка (session_lost)
         acc, total, first_json, failed = {}, None, "", False
         # ipatool отдаёт покупки страницами (новые первыми), максимум 100 за раз — читаем все
         for page in range(1, 101):
@@ -313,7 +321,9 @@ class TasksMixin:
             rc, out = self.stream(cmd, quiet_json=True)
             if rc != 0:
                 if not self.stop_flag:  # остановили — покажем то, что уже успели получить
-                    self.log("Не удалось получить список покупок. Выполнен ли вход? (кнопка «Войти»)")
+                    self.log("Не удалось получить список покупок.")
+                    # «сессии нет» (NO_SESSION) — выход: снова видна кнопка «Войти», к которой ведёт подсказка
+                    self.hint(out, gen)
                 failed = True
                 break
             got, tot = parse_purchases(out)
@@ -355,6 +365,7 @@ class TasksMixin:
         Проба владения — `ipatool list-versions -i ID`: ничего не скачивает, а Apple отвечает
         «license is required», если приложения нет в истории аккаунта.
         """
+        gen = self.session_gen  # при каком входе начата проверка (session_lost)
         names = {a["id"]: a["name"] for a in self.catalog.apps}
         ids = list(names)
         if not ids:
@@ -393,7 +404,7 @@ class TasksMixin:
                 elif SESSION_LOST.search(out):
                     if not state["abort"]:
                         self.log("Вход не выполнен или сессия истекла. Войдите заново и повторите.")
-                        self.session_lost()
+                        self.session_lost(gen)
                     state["abort"] = True
                 else:
                     state["unknown"] += 1
@@ -621,19 +632,25 @@ class TasksMixin:
         self.log("Проверка связи с серверами Apple:")
         bad, reasons = [], []
         root = None  # SSL-контекст с корневым сертификатом Apple (apple_root_context) — для APPLE_OWN_CA
+        proxies = {env_proxy(host) for host, _ in APPLE_HOSTS} - {None}
+        if proxies:
+            self.log("  Прокси из HTTPS_PROXY: " + ", ".join(sorted(map(proxy_label, proxies)))
+                     + " — ipatool идёт через него, проверка тоже.")
         for host, purpose in APPLE_HOSTS:
-            try:
-                ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
-            except OSError:
-                self.log(f"  ✗ {host} — {purpose}: адрес не находится (DNS)")
-                bad.append(host)
-                continue
-            fake = [ip for ip in ips if ipaddress.ip_address(ip).is_private or ipaddress.ip_address(ip).is_loopback
-                    or ip.startswith("0.")]
-            if fake:
-                self.log(f"  ✗ {host} — {purpose}: подменён адрес {fake[0]} (DNS для обхода блокировок или hosts)")
-                bad.append(host)
-                continue
+            # через прокси адрес ищет сам прокси: своя проверка DNS тут ничего не скажет о пути ipatool
+            if not env_proxy(host):
+                try:
+                    ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
+                except OSError:
+                    self.log(f"  ✗ {host} — {purpose}: адрес не находится (DNS)")
+                    bad.append(host)
+                    continue
+                fake = [ip for ip in ips if ipaddress.ip_address(ip).is_private
+                        or ipaddress.ip_address(ip).is_loopback or ip.startswith("0.")]
+                if fake:
+                    self.log(f"  ✗ {host} — {purpose}: подменён адрес {fake[0]} (DNS для обхода блокировок или hosts)")
+                    bad.append(host)
+                    continue
             try:
                 if host in APPLE_OWN_CA:
                     # как ipatool: сертификат сверяется по корневому сертификату Apple — одного TCP мало, иначе
@@ -648,7 +665,7 @@ class TasksMixin:
                     ok = True
                 else:
                     req = urllib.request.Request(f"https://{host}/", method="HEAD")
-                    with urllib.request.urlopen(req, timeout=10):  # закрыть соединение сразу после ответа
+                    with env_urlopen(req, timeout=10):  # закрыть соединение сразу после ответа
                         ok = True
             except urllib.error.HTTPError:
                 ok = True  # сервер ответил (404/403 — нормально для корня)

@@ -82,8 +82,9 @@ IPATOOL_HOME = DATA_DIR / "ipatool-home"
 # ipatool_env() подставляет вместо него DATA_DIR: выходит DATA_DIR\ipatool, а не %LOCALAPPDATA%\ipatool
 IPATOOL_CACHE = (IPATOOL_HOME / "Library" / "Caches" if sys.platform == "darwin" else DATA_DIR) / "ipatool"
 # временные файлы ipatool (при первом входе — десятки МБ в ipatool-macos-27-*). Сам ipatool удаляет их, только если
-# завершился штатно, а не по «Остановить»; остатки GUI удаляет при запуске и закрытии (apple.clear_ipatool_tmp)
-IPATOOL_TMP = DATA_DIR / "ipatool-tmp"
+# завершился штатно. У окна своя папка (apple.py подставляет её): окно удаляет там остатки после «Остановить»
+# (apple.clear_ipatool_tmp) и не должно задеть ipatool работающей в это время консольной версии
+IPATOOL_TMP = DATA_DIR / "ipatool-tmp-cli"
 # .ipa — в папке «ipa» рядом с exe (появляется при первом скачивании); если писать туда нельзя (exe лежит
 # в Program Files и т. п.) — в «Документы\\Restore\\ipa»
 OUT_DIR = HERE / "ipa" if (HERE / "ipa").is_dir() or _writable(HERE) else Path.home() / "Documents" / APP_NAME / "ipa"

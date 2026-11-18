@@ -102,6 +102,9 @@ class Backend(QObject, TasksMixin, DetailMixin):
         self.selected = {}  # id -> app, отмеченные для пакетной установки
         self.device = None
         self.after_login = None
+        # номер входа: меняется при каждом входе и выходе (on_login_result). Ответ Apple «сессии нет» относится
+        # к тому входу, при котором начался запрос (TasksMixin.session_lost)
+        self.session_gen = 0
         self.detail = None  # состояние открытой панели приложения (см. DetailMixin.open_detail)
         self.dlock = threading.Lock()  # проверки в панели идут по одной (общая папка сессии ipatool)
         self.stop_flag = False
@@ -385,6 +388,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
         self.on_login(email, password)
 
     def on_login_result(self, ok, who):
+        self.session_gen += 1
         self.loggedIn, self.account = ok, (who if ok else "")
         if ok:
             self.loginOpen = False

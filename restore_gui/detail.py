@@ -143,6 +143,7 @@ class DetailMixin:
         else:
             self.set_lbl(d, "acc", "спрашиваю Apple… обычно 5–30 секунд", "muted")
         t0 = time.time()
+        gen = self.session_gen  # ответ может прийти уже после входа или выхода (session_lost)
         rc, out = self.dq(list_versions_cmd(ipatool, kc, app["id"]), timeout=180)
         took = time.time() - t0
         versions = parse_versions(out)
@@ -169,14 +170,14 @@ class DetailMixin:
             d["check"], d["err"] = "error", "Вход не выполнен или истёк — войдите в Apple ID и повторите проверку."
             self.set_lbl(d, "acc", "Ошибка проверки: вход не выполнен или истёк", "warn")
             self.log(f"{app['name']}: list-versions — нет входа в Apple ID:\n" + d["answer"])
-            self.session_lost()
+            self.session_lost(gen)
         else:
             hints = explain_error(out)
             d["check"] = "error"
             d["err"] = hints[0] if hints else "Apple вернул ошибку, по ней нельзя понять, есть ли приложение в истории."
             self.set_lbl(d, "acc", "Ошибка проверки — это не значит, что приложения нет в истории", "warn")
             self.log(f"{app['name']}: ошибка list-versions (код {rc}):\n" + d["answer"])
-            self.hint(out)
+            self.hint(out, gen)
         self.post(self.refresh_list_keep)
 
         # версии показываем сразу, остальное — параллельно
@@ -207,6 +208,7 @@ class DetailMixin:
 
     def fetch_meta(self, d, ipatool, kc, versions, meta, workers=3):
         """Номера и даты показанных версий (get-version-metadata): 3 параллельных запроса, кэш на диске."""
+        gen = self.session_gen  # при каком входе начаты запросы (session_lost)
         pending = d.setdefault("meta_pending", set())
         todo = [v for v in self.shown_versions(d, versions) if v not in meta and v not in pending]
         if not todo:
@@ -248,7 +250,7 @@ class DetailMixin:
         if fails:
             self.log(f"{name}: номера не получены для {len(fails)} из {len(todo)} версий. Такую версию всё равно "
                      "можно выбрать и скачать.")
-            self.hint("\n".join(o for _, o in fails))
+            self.hint("\n".join(o for _, o in fails), gen)
         storage.save_meta(app_id, snap)  # не meta: его может дополнять параллельный fetch_meta («Показать ещё»)
 
     def store_check(self, d):

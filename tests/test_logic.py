@@ -425,6 +425,14 @@ class Footprint(unittest.TestCase):
             apple.forget(running)
             shutil.rmtree(core.IPATOOL_TMP, ignore_errors=True)
 
+    def test_cli_and_window_use_separate_ipatool_tmp(self):
+        """Окно удаляет остатки в своей временной папке и не задевает ipatool работающей консольной версии."""
+        import subprocess
+        self.assertEqual(core.IPATOOL_TMP, core.DATA_DIR / "ipatool-tmp")  # apple.py подставил папку окна
+        out = subprocess.run([sys.executable, "-c", "import restore_apps as c; print(c.IPATOOL_TMP.name)"],
+                             cwd=Path(core.__file__).parent, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip(), "ipatool-tmp-cli", out.stderr)
+
     def test_not_provisioned_means_sign_in_again(self):
         """ipatool 2.8: сессия от 2.7 без данных нового входа — «not provisioned», это повод войти заново."""
         out = "ERR error=\"store AMD state is not provisioned; run 'ipatool auth login' to authenticate\""
@@ -567,10 +575,21 @@ class _Answer:
         return self.body
 
 
+def _proxy_env(proxy, no_proxy=""):
+    """Переменные прокси для теста: только HTTPS_PROXY=proxy и NO_PROXY=no_proxy (остальные *_proxy убраны)."""
+    env = {k: v for k, v in os.environ.items()
+           if k.lower() not in ("https_proxy", "http_proxy", "all_proxy", "no_proxy")}
+    if proxy:
+        env["HTTPS_PROXY"] = proxy
+    if no_proxy:
+        env["NO_PROXY"] = no_proxy
+    return mock.patch.dict(os.environ, env, clear=True)
+
+
 class NetCheck(unittest.TestCase):
     """«Проверить связь с Apple» (TasksMixin.task_netcheck) без сети: ответы адресов подменены."""
 
-    def run_check(self, gsa_error=None, root_error=None):
+    def run_check(self, gsa_error=None, root_error=None, proxy=None):
         from restore_gui import tasks
 
         class Stub(tasks.TasksMixin):
@@ -597,11 +616,13 @@ class NetCheck(unittest.TestCase):
 
         stub = Stub()
         public = [(2, 1, 6, "", ("17.253.144.10", 443))]  # адрес Apple, не подменённый DNS
-        with mock.patch.object(tasks.socket, "getaddrinfo", return_value=public), \
-                mock.patch.object(tasks.urllib.request, "urlopen", return_value=_Answer()), \
+        with _proxy_env(proxy), \
+                mock.patch.object(tasks.socket, "getaddrinfo", return_value=public) as lookup, \
+                mock.patch.object(tasks, "env_urlopen", return_value=_Answer()), \
                 mock.patch.object(tasks, "apple_root_context", side_effect=root), \
                 mock.patch.object(tasks, "tls_check", side_effect=tls) as tls_check:
             stub.task_netcheck()
+        self.lookup = lookup
         return "\n".join(stub.lines), tls_check
 
     def test_hosts_needed_by_ipatool_28(self):
@@ -618,6 +639,7 @@ class NetCheck(unittest.TestCase):
         self.assertEqual([c.args[0] for c in tls_check.call_args_list], ["gsa.apple.com"])
         for host, _ in apple.APPLE_HOSTS:
             self.assertIn(f"✓ {host}", text)
+        self.assertNotIn("Прокси", text)
 
     def test_gsa_tls_failure_is_not_ok(self):
         """Одного открытого порта мало: перехват или обрыв защищённого соединения с gsa.apple.com — ошибка."""
@@ -641,9 +663,56 @@ class NetCheck(unittest.TestCase):
         tls_check.assert_not_called()
 
     def test_apple_root_checked_by_hash(self):
-        with mock.patch.object(apple.urllib.request, "urlopen", return_value=_Answer(b"not apple root")):
+        with mock.patch.object(apple, "env_urlopen", return_value=_Answer(b"not apple root")):
             with self.assertRaises(ValueError):
                 apple.apple_root_context()
+
+    def test_with_proxy_no_own_dns_check(self):
+        """Через прокси адреса ищет прокси: своя проверка DNS не нужна, в журнале — какой прокси (без пароля)."""
+        text, _ = self.run_check(proxy="http://user:secret@127.0.0.1:3128")
+        self.assertIn("Прокси из HTTPS_PROXY: http://127.0.0.1:3128", text)
+        self.assertNotIn("secret", text)
+        self.lookup.assert_not_called()
+        self.assertIn("Связь с Apple в порядке.", text)
+
+    def test_proxy_chosen_like_ipatool(self):
+        """ipatool (Go) берёт прокси только из HTTPS_PROXY с исключениями NO_PROXY; адрес без схемы — http."""
+        with _proxy_env("user:p%40ss@proxy.local:3128", no_proxy="localhost,.example.com"):
+            self.assertEqual(apple.env_proxy("gsa.apple.com"), "http://user:p%40ss@proxy.local:3128")
+            self.assertIsNone(apple.env_proxy("cdn.example.com"))
+            self.assertEqual(apple.proxy_label(apple.env_proxy("gsa.apple.com")), "http://proxy.local:3128")
+        with _proxy_env(None):
+            self.assertIsNone(apple.env_proxy("gsa.apple.com"))
+        with _proxy_env("socks5://127.0.0.1:1080"):
+            with self.assertRaisesRegex(OSError, "только http://"):
+                apple.tls_check("gsa.apple.com", None)
+
+    def test_gsa_through_proxy_that_refuses(self):
+        """Прокси из HTTPS_PROXY отклонил CONNECT: ipatool туда не пройдёт — и проверка не идёт в обход напрямую."""
+        import base64
+        import socketserver
+        import ssl
+        import threading
+        seen = []
+
+        class Refuse(socketserver.StreamRequestHandler):
+            def handle(self):
+                lines = []
+                while (line := self.rfile.readline()) not in (b"\r\n", b"\n", b""):
+                    lines.append(line.decode("latin-1").strip())
+                seen.append(lines)
+                self.wfile.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Refuse) as srv:
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                with _proxy_env(f"http://user:secret@127.0.0.1:{srv.server_address[1]}"):
+                    with self.assertRaisesRegex(OSError, "Tunnel connection failed: 403"):
+                        apple.tls_check("gsa.apple.com", ssl.create_default_context(), timeout=5)
+            finally:
+                srv.shutdown()
+        self.assertEqual(seen[0][0], "CONNECT gsa.apple.com:443 HTTP/1.1")
+        self.assertIn("Proxy-Authorization: Basic " + base64.b64encode(b"user:secret").decode(), seen[0])
 
 
 class SessionLost(unittest.TestCase):
@@ -654,7 +723,7 @@ class SessionLost(unittest.TestCase):
 
         class Stub(tasks.TasksMixin):
             def __init__(self):
-                self._loggedIn, self.calls = logged_in, []
+                self._loggedIn, self.calls, self.session_gen = logged_in, [], 1
 
             def log(self, _text):
                 pass
@@ -668,9 +737,10 @@ class SessionLost(unittest.TestCase):
             def open_log(self):
                 pass
 
-            def forget_account(self):
+            def forget_account(self):  # как Backend: on_login_result меняет номер входа
                 self.calls.append("forget_account")
                 self._loggedIn = False
+                self.session_gen += 1
 
             def start(self, _label, fn, *_args):
                 self.calls.append(fn.__name__)
@@ -690,6 +760,17 @@ class SessionLost(unittest.TestCase):
         stub = self.make(False)  # ошибка самого входа — выходить не из чего
         stub.hint("ERR failed to get account")
         self.assertEqual(stub.calls, [])
+
+    def test_answer_from_before_login_keeps_new_session(self):
+        """Ответ «сессии нет» на запрос, начатый до входа (панель приложения спрашивает Apple вне очереди задач),
+        пришёл уже после нового входа — новую сессию он не трогает."""
+        stub = self.make(True)
+        before = stub.session_gen - 1  # номер до входа: вход его сменил
+        stub.session_lost(before)
+        stub.hint("ERR failed to get account", before)
+        self.assertEqual(stub.calls, [])
+        stub.session_lost(stub.session_gen)  # ответ на запрос при нынешнем входе
+        self.assertEqual(stub.calls, ["forget_account", "task_logout"])
 
 
 if __name__ == "__main__":

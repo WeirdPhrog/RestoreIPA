@@ -1,6 +1,8 @@
 """ipatool и сервера Apple: запуск команд, разбор ответов, понятные объяснения ошибок. Без интерфейса."""
+import base64
 import contextlib
 import hashlib
+import http.client
 import json
 import os
 import queue
@@ -14,11 +16,16 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import restore_apps as core
+
+# временные файлы ipatool, запущенного окном (core.ipatool_env), — отдельно от консольной версии: остатки здесь
+# окно удаляет (clear_ipatool_tmp), видя только свои процессы. Второй экземпляр окна не запускается
+core.IPATOOL_TMP = core.DATA_DIR / "ipatool-tmp"
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # цветовые коды ipatool в журнале не нужны
@@ -61,12 +68,34 @@ APPLE_ROOT_URL = "https://www.apple.com/appleca/AppleIncRootCertificate.cer"  # 
 APPLE_ROOT_SHA256 = "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024"
 
 
+def env_proxy(host):
+    """Прокси для https://host так, как его выбирает ipatool (Go, http.ProxyFromEnvironment): только HTTPS_PROXY
+    с исключениями из NO_PROXY. Системный прокси Windows Go не читает — его не берём и мы. None — напрямую."""
+    proxies = urllib.request.getproxies_environment()
+    proxy = proxies.get("https")
+    if not proxy or urllib.request.proxy_bypass_environment(host, proxies):
+        return None
+    return proxy if "://" in proxy else "http://" + proxy  # Go тоже считает адрес без схемы http-прокси
+
+
+def proxy_label(proxy):
+    """Адрес прокси для журнала — без логина и пароля."""
+    p = urllib.parse.urlsplit(proxy)
+    return f"{p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")
+
+
+def env_urlopen(req, timeout=10):
+    """urlopen тем же путём, что у ipatool: прокси только из переменных окружения (env_proxy), без системного."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies_environment()))
+    return opener.open(req, timeout=timeout)
+
+
 def apple_root_context(timeout=10):
     """SSL-контекст с системными корневыми сертификатами и «Apple Root CA» — как у ipatool для gsa.apple.com.
 
     Сертификат скачивается с www.apple.com и сверяется по SHA-256. Ошибки: OSError (нет связи, перехват HTTPS),
     ValueError (скачалось не то)."""
-    with urllib.request.urlopen(APPLE_ROOT_URL, timeout=timeout) as r:
+    with env_urlopen(APPLE_ROOT_URL, timeout=timeout) as r:
         der = r.read(64 << 10)
     if hashlib.sha256(der).hexdigest() != APPLE_ROOT_SHA256:
         raise ValueError("с www.apple.com скачался не тот корневой сертификат Apple")
@@ -76,11 +105,27 @@ def apple_root_context(timeout=10):
 
 
 def tls_check(host, ctx, timeout=10):
-    """Защищённое соединение с host:443 с проверкой сертификата по ctx; ошибка — исключение (OSError, ssl.SSLError).
-    Перехват HTTPS антивирусом даёт SSLCertVerificationError, как и у ipatool."""
-    with socket.create_connection((host, 443), timeout=timeout) as sock, \
-            ctx.wrap_socket(sock, server_hostname=host):
-        pass
+    """Защищённое соединение с host:443 с проверкой сертификата по ctx — напрямую или, как ipatool, через прокси
+    из HTTPS_PROXY (CONNECT). Ошибка — исключение (OSError, ssl.SSLError): перехват HTTPS антивирусом даёт
+    SSLCertVerificationError, отказ прокси — OSError «Tunnel connection failed»."""
+    proxy = env_proxy(host)
+    if not proxy:
+        with socket.create_connection((host, 443), timeout=timeout) as sock, \
+                ctx.wrap_socket(sock, server_hostname=host):
+            return
+    p = urllib.parse.urlsplit(proxy)
+    if p.scheme != "http" or not p.hostname:
+        raise OSError(f"прокси {proxy_label(proxy)} из HTTPS_PROXY эта проверка не поддерживает (только http://)")
+    headers = {}
+    if p.username:
+        cred = f"{urllib.parse.unquote(p.username)}:{urllib.parse.unquote(p.password or '')}"
+        headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+    conn = http.client.HTTPSConnection(p.hostname, p.port or 80, timeout=timeout, context=ctx)
+    conn.set_tunnel(host, 443, headers)
+    try:
+        conn.connect()  # CONNECT через прокси, затем TLS с host и проверкой сертификата по ctx
+    finally:
+        conn.close()
 
 
 def adopt_old_cache():
