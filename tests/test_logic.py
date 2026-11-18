@@ -559,22 +559,6 @@ class Release(unittest.TestCase):
         self.assertIsNone(self.rel.notes("999.0.0"))
 
 
-class _Answer:
-    """Ответ urlopen для подмены: контекстный менеджер с телом body."""
-
-    def __init__(self, body=b""):
-        self.body = body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-    def read(self, *_a):
-        return self.body
-
-
 def _proxy_env(proxy, no_proxy=""):
     """Переменные прокси для теста: только HTTPS_PROXY=proxy и NO_PROXY=no_proxy (остальные *_proxy убраны)."""
     env = {k: v for k, v in os.environ.items()
@@ -584,6 +568,27 @@ def _proxy_env(proxy, no_proxy=""):
     if no_proxy:
         env["NO_PROXY"] = no_proxy
     return mock.patch.dict(os.environ, env, clear=True)
+
+
+class _FakeConn:
+    """http.client.HTTPSConnection для подмены: запоминает, куда подключались бы (made) — фактический маршрут."""
+    made = []
+
+    def __init__(self, host, port, timeout=None, context=None):
+        self.host, self.port, self.context, self.tunnel = host, port, context, None
+        _FakeConn.made.append(self)
+
+    def set_tunnel(self, host, port, headers=None):
+        self.tunnel = (host, port, dict(headers or {}))
+
+    def request(self, method, path):
+        self.sent = (method, path)
+
+    def getresponse(self):
+        return mock.Mock(status=200, read=lambda *_a: b"")
+
+    def close(self):
+        pass
 
 
 class NetCheck(unittest.TestCase):
@@ -605,25 +610,27 @@ class NetCheck(unittest.TestCase):
             def open_log(self):
                 pass
 
-        def tls(_host, _ctx):
-            if gsa_error:
+        root_ctx = object()
+
+        def request(host, ctx=None, **_kw):
+            if host == "gsa.apple.com" and gsa_error:
                 raise gsa_error
+            return 200, b""
 
         def root():
             if root_error:
                 raise root_error
-            return object()
+            return root_ctx
 
         stub = Stub()
         public = [(2, 1, 6, "", ("17.253.144.10", 443))]  # адрес Apple, не подменённый DNS
         with _proxy_env(proxy), \
                 mock.patch.object(tasks.socket, "getaddrinfo", return_value=public) as lookup, \
-                mock.patch.object(tasks, "env_urlopen", return_value=_Answer()), \
                 mock.patch.object(tasks, "apple_root_context", side_effect=root), \
-                mock.patch.object(tasks, "tls_check", side_effect=tls) as tls_check:
+                mock.patch.object(tasks, "https_request", side_effect=request) as requests:
             stub.task_netcheck()
-        self.lookup = lookup
-        return "\n".join(stub.lines), tls_check
+        self.lookup, self.root_ctx = lookup, root_ctx
+        return "\n".join(stub.lines), requests
 
     def test_hosts_needed_by_ipatool_28(self):
         """Подпись входа (fpinit, s.mzstatic.com из bag.xml) и ключ служебных файлов (wkms-public) тоже проверяются."""
@@ -634,9 +641,12 @@ class NetCheck(unittest.TestCase):
         self.assertEqual(len(hosts), len(set(hosts)))
 
     def test_all_reachable(self):
-        text, tls_check = self.run_check()
+        text, requests = self.run_check()
         self.assertIn("Связь с Apple в порядке.", text)
-        self.assertEqual([c.args[0] for c in tls_check.call_args_list], ["gsa.apple.com"])
+        ctx = {c.args[0]: c.kwargs.get("ctx") for c in requests.call_args_list}
+        self.assertEqual(sorted(ctx), sorted(h for h, _ in apple.APPLE_HOSTS), "все адреса — одним путём")
+        self.assertIs(ctx.pop("gsa.apple.com"), self.root_ctx, "gsa.apple.com — по корневому сертификату Apple")
+        self.assertEqual(set(ctx.values()), {None})
         for host, _ in apple.APPLE_HOSTS:
             self.assertIn(f"✓ {host}", text)
         self.assertNotIn("Прокси", text)
@@ -654,17 +664,18 @@ class NetCheck(unittest.TestCase):
 
     def test_apple_root_not_downloaded_is_not_ok(self):
         """Корневой сертификат Apple не скачался (даже с ответом сервера, HTTP 404) — gsa.apple.com не проверен."""
-        import urllib.error
-        err = urllib.error.HTTPError(apple.APPLE_ROOT_URL, 404, "Not Found", {}, None)
-        text, tls_check = self.run_check(root_error=err)
+        text, requests = self.run_check(root_error=OSError("www.apple.com ответил HTTP 404"))
         self.assertIn("✗ gsa.apple.com", text)
         self.assertIn("корневой сертификат Apple", text)
         self.assertNotIn("Связь с Apple в порядке", text)
-        tls_check.assert_not_called()
+        self.assertNotIn("gsa.apple.com", [c.args[0] for c in requests.call_args_list])
 
-    def test_apple_root_checked_by_hash(self):
-        with mock.patch.object(apple, "env_urlopen", return_value=_Answer(b"not apple root")):
+    def test_apple_root_checked_by_status_and_hash(self):
+        with mock.patch.object(apple, "https_request", return_value=(200, b"not apple root")):
             with self.assertRaises(ValueError):
+                apple.apple_root_context()
+        with mock.patch.object(apple, "https_request", return_value=(404, b"")):
+            with self.assertRaisesRegex(OSError, "HTTP 404"):
                 apple.apple_root_context()
 
     def test_with_proxy_no_own_dns_check(self):
@@ -675,17 +686,64 @@ class NetCheck(unittest.TestCase):
         self.lookup.assert_not_called()
         self.assertIn("Связь с Apple в порядке.", text)
 
-    def test_proxy_chosen_like_ipatool(self):
-        """ipatool (Go) берёт прокси только из HTTPS_PROXY с исключениями NO_PROXY; адрес без схемы — http."""
-        with _proxy_env("user:p%40ss@proxy.local:3128", no_proxy="localhost,.example.com"):
-            self.assertEqual(apple.env_proxy("gsa.apple.com"), "http://user:p%40ss@proxy.local:3128")
-            self.assertIsNone(apple.env_proxy("cdn.example.com"))
-            self.assertEqual(apple.proxy_label(apple.env_proxy("gsa.apple.com")), "http://proxy.local:3128")
+    def test_unsupported_proxy_stops_before_connecting(self):
+        """https:// и socks5:// проверка не умеет: останавливается до подключения — пароль прокси никуда не уходит."""
+        for proxy in ("https://user:secret@proxy.local", "socks5://user:secret@proxy.local:1080"):
+            text, requests = self.run_check(proxy=proxy)
+            requests.assert_not_called()
+            self.lookup.assert_not_called()
+            self.assertIn("остановлена до подключения", text)
+            self.assertNotIn("secret", text)
+            self.assertNotIn("Связь с Apple в порядке", text)
+
+    def route(self, host):
+        """Куда https_request подключился бы к host: «direct» или «прокси:порт» (через CONNECT к host:443)."""
+        _FakeConn.made.clear()
+        with mock.patch.object(apple.http.client, "HTTPSConnection", _FakeConn):
+            apple.https_request(host)
+        (conn,) = _FakeConn.made
+        if conn.tunnel is None:
+            self.assertEqual((conn.host, conn.port), (host, 443))
+            return "direct"
+        self.assertEqual(conn.tunnel[:2], (host, 443))
+        return f"{conn.host}:{conn.port}"
+
+    def test_route_like_ipatool(self):
+        """Маршрут — как у ipatool (Go, http.ProxyFromEnvironment и правила NO_PROXY из x/net/http/httpproxy)."""
+        cases = (  # HTTPS_PROXY, NO_PROXY, адрес, маршрут
+            ("http://proxy", "", "init.itunes.apple.com", "proxy:80"),  # без порта — порт схемы, как в Go
+            ("proxy:3128", "", "init.itunes.apple.com", "proxy:3128"),  # без схемы — http
+            ("http://proxy:3128", "*.apple.com", "init.itunes.apple.com", "direct"),
+            ("http://proxy:3128", "init.itunes.apple.com:443", "init.itunes.apple.com", "direct"),
+            ("http://proxy:3128", "init.itunes.apple.com:80", "init.itunes.apple.com", "proxy:3128"),
+            ("http://proxy:3128", "apple.com", "gsa.apple.com", "direct"),  # домен — и поддомены
+            ("http://proxy:3128", ".itunes.apple.com", "itunes.apple.com", "proxy:3128"),  # «.домен» — только поддомены
+            ("http://proxy:3128", ".itunes.apple.com", "buy.itunes.apple.com", "direct"),
+            ("http://proxy:3128", " foo.com , * ", "gsa.apple.com", "direct"),
+            ("http://proxy:3128", "mzstatic.com,10.0.0.0/8,17.0.0.1", "gsa.apple.com", "proxy:3128"),
+            ("http://proxy:3128", "", "localhost", "direct"),  # localhost и loopback — всегда напрямую
+            (None, "", "gsa.apple.com", "direct"),
+        )
+        for proxy, no_proxy, host, expected in cases:
+            with self.subTest(proxy=proxy, no_proxy=no_proxy, host=host), _proxy_env(proxy, no_proxy):
+                self.assertEqual(self.route(host), expected)
         with _proxy_env(None):
-            self.assertIsNone(apple.env_proxy("gsa.apple.com"))
-        with _proxy_env("socks5://127.0.0.1:1080"):
-            with self.assertRaisesRegex(OSError, "только http://"):
-                apple.tls_check("gsa.apple.com", None)
+            os.environ["HTTP_PROXY"] = "http://proxy:3128"  # для https Go его не берёт
+            self.assertEqual(self.route("gsa.apple.com"), "direct")
+
+    def test_proxy_password_only_in_connect_to_http_proxy(self):
+        import base64
+        with _proxy_env("http://user:p%40ss@proxy.local:3128"):
+            self.assertEqual(self.route("gsa.apple.com"), "proxy.local:3128")
+            self.assertEqual(_FakeConn.made[0].tunnel[2],
+                             {"Proxy-Authorization": "Basic " + base64.b64encode(b"user:p@ss").decode()})
+            self.assertEqual(apple.proxy_label(apple.proxy_route("gsa.apple.com")), "http://proxy.local:3128")
+        for proxy in ("https://user:secret@proxy.local", "socks5://proxy.local"):
+            _FakeConn.made.clear()
+            with _proxy_env(proxy), mock.patch.object(apple.http.client, "HTTPSConnection", _FakeConn):
+                with self.assertRaisesRegex(OSError, "только http://"):
+                    apple.https_request("gsa.apple.com")
+            self.assertEqual(_FakeConn.made, [], f"{proxy}: подключение до отказа")
 
     def test_gsa_through_proxy_that_refuses(self):
         """Прокси из HTTPS_PROXY отклонил CONNECT: ipatool туда не пройдёт — и проверка не идёт в обход напрямую."""
@@ -708,7 +766,7 @@ class NetCheck(unittest.TestCase):
             try:
                 with _proxy_env(f"http://user:secret@127.0.0.1:{srv.server_address[1]}"):
                     with self.assertRaisesRegex(OSError, "Tunnel connection failed: 403"):
-                        apple.tls_check("gsa.apple.com", ssl.create_default_context(), timeout=5)
+                        apple.https_request("gsa.apple.com", ctx=ssl.create_default_context(), timeout=5)
             finally:
                 srv.shutdown()
         self.assertEqual(seen[0][0], "CONNECT gsa.apple.com:443 HTTP/1.1")
@@ -760,6 +818,20 @@ class SessionLost(unittest.TestCase):
         stub = self.make(False)  # ошибка самого входа — выходить не из чего
         stub.hint("ERR failed to get account")
         self.assertEqual(stub.calls, [])
+
+    def test_relogin_needs_2fa_code(self):
+        """Истёк токен: ipatool сам входит заново, но Apple просит код 2FA — «auth code is required». Это тоже выход
+        с кнопкой «Войти» (форма входа спросит код), подсказка про 2FA, а пакетная установка прерывается."""
+        out = 'ERR error="auth code is required"'
+        stub = self.make(True)
+        stub.hint(out)
+        self.assertEqual(stub.calls, ["forget_account", "task_logout"])
+        self.assertTrue(apple.SESSION_LOST.search(out))
+        self.assertTrue(apple.fatal_error(out))
+        self.assertTrue(any("2FA" in h for h in apple.explain_error(out)), apple.explain_error(out))
+        # сам `auth login` просит код иначе — это не потеря сессии (вход спросит код, core.NEEDS_CODE)
+        login = "INF 2FA code is required; run the command again and supply a code using the '--auth-code' flag"
+        self.assertNotRegex(login.lower(), apple.SESSION_GONE)
 
     def test_answer_from_before_login_keeps_new_session(self):
         """Ответ «сессии нет» на запрос, начатый до входа (панель приложения спрашивает Apple вне очереди задач),

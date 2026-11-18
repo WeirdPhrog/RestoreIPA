@@ -410,21 +410,27 @@ class Window(unittest.TestCase):
             b.loggedIn, b.account = saved[2:]
 
     def test_purchases_without_session_shows_login_button(self):
-        """«Мои покупки»: ipatool ответил «failed to get account» — выход, кнопка «Войти» снова видна."""
+        """«Мои покупки»: ipatool ответил «failed to get account» или, войдя заново после истёкшего токена,
+        «auth code is required» (нужен код 2FA) — выход, кнопка «Войти» снова видна, форма входа открывается."""
         b = self.backend
         self.wait_idle()
         started = []
-        saved = (b.post, b.start, b.stream, b.loggedIn, b.account)
+        saved = (b.post, b.start, b.stream, b.loggedIn, b.account, b.loginOpen)
         b.post, b.start = (lambda fn: fn()), (lambda label, fn, *a: started.append(fn))
-        b.stream = lambda cmd, quiet_json=False: (1, 'ERR error="failed to get account: not found"\n')
         try:
-            b.on_login_result(True, "someone@example.com")
-            b.task_purchases("ipatool")
-            self.assertFalse(b.loggedIn)
-            self.assertEqual(started, [b.task_logout])
+            for out in ('ERR error="failed to get account: not found"\n', 'ERR error="auth code is required"\n'):
+                started.clear()
+                b.loginOpen = False
+                b.stream = lambda cmd, quiet_json=False, out=out: (1, out)
+                b.on_login_result(True, "someone@example.com")
+                b.task_purchases("ipatool")
+                self.assertFalse(b.loggedIn, out)
+                self.assertEqual(started, [b.task_logout], out)
+                b.openLogin("")
+                self.assertTrue(b.loginOpen, out)
         finally:
             b.post, b.start, b.stream = saved[:3]
-            b.loggedIn, b.account = saved[3:]
+            b.loggedIn, b.account, b.loginOpen = saved[3:]
 
     def test_download_creates_missing_parent_folders(self):
         """Если рядом с exe писать нельзя, папка — Документы\\Restore\\ipa; если нет даже Restore, скачивание не падает."""

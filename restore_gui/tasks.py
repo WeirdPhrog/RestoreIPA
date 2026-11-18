@@ -11,18 +11,16 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, NO_SESSION, SESSION_LOST, ProcsClosed, adopt_old_cache,
-                    apple_root_context, bundled, clear_stale_locks, clip, drop_old_sap, env_proxy, env_urlopen,
-                    explain_error, fatal_error, fetch_available, forget, in_session_copies, kill_procs,
-                    list_versions_cmd, ownership, parse_purchases, parse_versions, popen, proxy_label, run_quiet,
-                    sap_ready, scan_copies, seed_unicorn, tls_check)
+from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, SESSION_GONE, SESSION_LOST, ProcsClosed, adopt_old_cache,
+                    apple_root_context, bundled, clear_stale_locks, clip, drop_old_sap, explain_error, fatal_error,
+                    fetch_available, forget, https_request, in_session_copies, kill_procs, list_versions_cmd,
+                    ownership, parse_purchases, parse_versions, popen, proxy_label, proxy_route, proxy_supported,
+                    run_quiet, sap_ready, scan_copies, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 # параллельных проверок владения: каждый ipatool 2.8 — до ~0,5 ГБ памяти и больше ядра процессора на 6–8 с
@@ -207,11 +205,11 @@ class TasksMixin:
             self.log("ⓘ " + h)
         if hints:
             self.post(self.open_log)
-        if re.search(NO_SESSION, text or "", re.I):
+        if re.search(SESSION_GONE, text or "", re.I):
             self.session_lost(gen)
 
     def session_lost(self, gen=None):
-        """Apple ответил, что входа нет или сессия истекла (SESSION_LOST, NO_SESSION). Кнопка «Войти» видна только
+        """Apple ответил, что входа нет или сессия истекла (SESSION_LOST, SESSION_GONE). Кнопка «Войти» видна только
         без входа, поэтому выходим, как по кнопке «Выйти», — когда закончится текущая операция, оставаясь на той же
         странице (открытая панель приложения показывает, что проверка не удалась). Можно звать из любого потока.
 
@@ -322,7 +320,8 @@ class TasksMixin:
             if rc != 0:
                 if not self.stop_flag:  # остановили — покажем то, что уже успели получить
                     self.log("Не удалось получить список покупок.")
-                    # «сессии нет» (NO_SESSION) — выход: снова видна кнопка «Войти», к которой ведёт подсказка
+                    # «сессии нет» (SESSION_GONE; в т.ч. ipatool сам входил заново, а Apple просит код 2FA) —
+                    # выход: снова видна кнопка «Войти», к которой ведёт подсказка
                     self.hint(out, gen)
                 failed = True
                 break
@@ -632,13 +631,25 @@ class TasksMixin:
         self.log("Проверка связи с серверами Apple:")
         bad, reasons = [], []
         root = None  # SSL-контекст с корневым сертификатом Apple (apple_root_context) — для APPLE_OWN_CA
-        proxies = {env_proxy(host) for host, _ in APPLE_HOSTS} - {None}
+        # маршрут к каждому адресу — как у ipatool (proxy_route); с неподдерживаемым прокси — ни одного подключения
+        try:
+            routes = {host: proxy_route(host) for host, _ in APPLE_HOSTS}
+        except OSError as e:
+            self.log(f"  ✗ {e}. Проверка остановлена: ipatool с таким HTTPS_PROXY тоже не подключится.")
+            return
+        proxies = set(routes.values()) - {None}
+        unsupported = sorted(proxy_label(p) for p in proxies if not proxy_supported(p))
+        if unsupported:
+            self.log("  ✗ Прокси из HTTPS_PROXY: " + ", ".join(unsupported) + ". Через такой прокси эта проверка "
+                     "ходить не умеет (только http://), поэтому остановлена до подключения; ipatool пойдёт через "
+                     "него. Проверьте вход в программе или задайте http-прокси.")
+            return
         if proxies:
             self.log("  Прокси из HTTPS_PROXY: " + ", ".join(sorted(map(proxy_label, proxies)))
                      + " — ipatool идёт через него, проверка тоже.")
         for host, purpose in APPLE_HOSTS:
             # через прокси адрес ищет сам прокси: своя проверка DNS тут ничего не скажет о пути ipatool
-            if not env_proxy(host):
+            if not routes[host]:
                 try:
                     ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
                 except OSError:
@@ -652,24 +663,20 @@ class TasksMixin:
                     bad.append(host)
                     continue
             try:
+                ctx = None  # системные корневые сертификаты
                 if host in APPLE_OWN_CA:
                     # как ipatool: сертификат сверяется по корневому сертификату Apple — одного TCP мало, иначе
                     # перехват или обрыв защищённого соединения выглядел бы как «связь в порядке»
                     if root is None:
                         try:
                             root = apple_root_context()
-                        except (OSError, ValueError) as e:  # HTTPError — тоже OSError
+                        except (OSError, ValueError) as e:
                             raise OSError("не скачался корневой сертификат Apple с www.apple.com: "
                                           f"{getattr(e, 'reason', None) or e}") from e
-                    tls_check(host, root)
-                    ok = True
-                else:
-                    req = urllib.request.Request(f"https://{host}/", method="HEAD")
-                    with env_urlopen(req, timeout=10):  # закрыть соединение сразу после ответа
-                        ok = True
-            except urllib.error.HTTPError:
-                ok = True  # сервер ответил (404/403 — нормально для корня)
-            except (urllib.error.URLError, OSError) as e:
+                    ctx = root
+                https_request(host, ctx=ctx)  # любой ответ сервера (и 404/403 для корня) — связь есть
+                ok = True
+            except OSError as e:
                 ok = False
                 reason = getattr(e, "reason", None) or e
             if ok:

@@ -3,12 +3,12 @@ import base64
 import contextlib
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 import queue
 import re
 import shutil
-import socket
 import ssl
 import subprocess
 import sys
@@ -30,7 +30,8 @@ core.IPATOOL_TMP = core.DATA_DIR / "ipatool-tmp"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # цветовые коды ipatool в журнале не нужны
 NOT_OWNED = re.compile(r"license is required", re.I)  # Apple: приложения нет в истории этого Apple ID
-SESSION_LOST = re.compile(r"failed to get account|keyring|not logged|sign.?in|password token|not provisioned", re.I)
+SESSION_LOST = re.compile(r"failed to get account|keyring|not logged|sign.?in|password token|not provisioned"
+                          r"|auth code is required", re.I)  # последнее — см. REAUTH_CODE
 # копии сессии для параллельных запросов (in_session_copies); до 1.2.0 — %TEMP%\restore_scan_*
 SCAN_ROOT = core.DATA_DIR / "scan"
 UNICORN_VERSION = "2.1.4"
@@ -68,14 +69,86 @@ APPLE_ROOT_URL = "https://www.apple.com/appleca/AppleIncRootCertificate.cer"  # 
 APPLE_ROOT_SHA256 = "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024"
 
 
-def env_proxy(host):
-    """Прокси для https://host так, как его выбирает ipatool (Go, http.ProxyFromEnvironment): только HTTPS_PROXY
-    с исключениями из NO_PROXY. Системный прокси Windows Go не читает — его не берём и мы. None — напрямую."""
-    proxies = urllib.request.getproxies_environment()
-    proxy = proxies.get("https")
-    if not proxy or urllib.request.proxy_bypass_environment(host, proxies):
+# Маршрут к серверам Apple — как у ipatool. Его HTTP-клиент (Go, http.ProxyFromEnvironment) берёт прокси только
+# из HTTPS_PROXY с исключениями NO_PROXY; системный прокси Windows Go не читает. Проверка связи ходит тем же путём
+# (proxy_route, https_request), иначе она «зелёная», а ipatool идёт заблокированным маршрутом — или наоборот.
+PROXY_PORTS = {"http": "80", "https": "443", "socks5": "1080", "socks5h": "1080"}  # порт по схеме, как в Go
+
+
+def _getenv_any(*names):
+    """Первая непустая переменная окружения из names (как getEnvAny в Go: сначала HTTPS_PROXY, затем https_proxy)."""
+    return next((os.environ[n] for n in names if os.environ.get(n)), "")
+
+
+def _no_proxy(host, port, rules):
+    """Идти ли к host:port напрямую по правилам NO_PROXY — как в Go (golang.org/x/net/http/httpproxy):
+    «*» — напрямую ко всем; IP и сеть CIDR; домен — сам он и его поддомены, «.домен» и «*.домен» — только поддомены;
+    у IP и домена может быть порт («init.itunes.apple.com:443»). localhost и loopback — всегда напрямую."""
+    host = host.lower().strip("[]")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if host == "localhost" or (ip is not None and ip.is_loopback):
+        return True
+    for rule in rules.split(","):
+        rule = rule.strip().lower()
+        if not rule:
+            continue
+        if rule == "*":
+            return True
+        if "/" in rule:
+            with contextlib.suppress(ValueError):
+                if ip is not None and ip in ipaddress.ip_network(rule, strict=False):
+                    return True
+            continue
+        m = re.fullmatch(r"\[([^\]]*)\]:(\d*)", rule)  # [IPv6]:порт
+        if m:
+            rhost, rport = m.groups()
+        elif rule.count(":") == 1:  # хост:порт; больше двоеточий — IPv6 без порта
+            rhost, rport = rule.split(":")
+        else:
+            rhost, rport = rule.strip("[]"), ""
+        if not rhost:
+            continue
+        try:
+            rip = ipaddress.ip_address(rhost)
+        except ValueError:
+            rip = None
+        if rip is not None:
+            if ip == rip and rport in ("", port):
+                return True
+            continue
+        if rhost.startswith("*."):
+            rhost = rhost[1:]
+        whole = not rhost.startswith(".")  # «домен» — и он сам, «.домен» — только поддомены
+        suffix = "." + rhost if whole else rhost
+        if ip is None and (host.endswith(suffix) or (whole and host == rhost)) and rport in ("", port):
+            return True
+    return False
+
+
+def proxy_route(host, port=443):
+    """Прокси, через который ipatool пойдёт к https://host:port, — адрес с явным портом (без порта Go берёт порт
+    схемы: http — 80), или None — напрямую (HTTPS_PROXY не задан или host в NO_PROXY). HTTP_PROXY для https Go
+    не берёт. OSError — HTTPS_PROXY не разобрать."""
+    raw = _getenv_any("HTTPS_PROXY", "https_proxy").strip()
+    if not raw or _no_proxy(host, str(port), _getenv_any("NO_PROXY", "no_proxy")):
         return None
-    return proxy if "://" in proxy else "http://" + proxy  # Go тоже считает адрес без схемы http-прокси
+    p = urllib.parse.urlsplit(raw)
+    if not p.scheme or not p.hostname:  # «proxy:3128» — Go считает это http-прокси
+        p = urllib.parse.urlsplit("http://" + raw)
+    try:
+        pport = p.port
+    except ValueError:
+        pport = None
+        p = None
+    if p is None or not p.hostname:
+        raise OSError("адрес прокси в HTTPS_PROXY не разобрать")
+    scheme = p.scheme.lower()
+    userinfo = p.netloc.rpartition("@")[0]
+    name = f"[{p.hostname}]" if ":" in p.hostname else p.hostname
+    return f"{scheme}://{userinfo + '@' if userinfo else ''}{name}:{pport or PROXY_PORTS.get(scheme, '80')}"
 
 
 def proxy_label(proxy):
@@ -84,48 +157,56 @@ def proxy_label(proxy):
     return f"{p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")
 
 
-def env_urlopen(req, timeout=10):
-    """urlopen тем же путём, что у ipatool: прокси только из переменных окружения (env_proxy), без системного."""
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies_environment()))
-    return opener.open(req, timeout=timeout)
+def proxy_supported(proxy):
+    """Через такой прокси проверка связи умеет ходить: только http:// (CONNECT). К https:// ipatool подключается
+    по TLS, а http.client отправил бы CONNECT с паролем прокси открытым текстом; socks5 http.client не умеет."""
+    return urllib.parse.urlsplit(proxy).scheme == "http"
+
+
+def https_request(host, path="/", method="HEAD", ctx=None, timeout=10, limit=64 << 10):
+    """Запрос к https://host{path} тем же путём, что у ipatool (proxy_route): напрямую или через http-прокси
+    (CONNECT, затем TLS с host). Сертификат проверяется по ctx (по умолчанию — системные корневые). Любой ответ
+    сервера — связь есть: возвращает (код, тело до limit байт). Ошибки — OSError: перехват HTTPS антивирусом даёт
+    ssl.SSLCertVerificationError, отказ прокси — «Tunnel connection failed». Неподдерживаемый прокси — OSError
+    до любого подключения."""
+    ctx = ctx or ssl.create_default_context()
+    proxy = proxy_route(host)
+    if proxy is None:
+        conn = http.client.HTTPSConnection(host, 443, timeout=timeout, context=ctx)
+    else:
+        if not proxy_supported(proxy):
+            raise OSError(f"прокси {proxy_label(proxy)} из HTTPS_PROXY эта проверка не поддерживает (только http://)")
+        p = urllib.parse.urlsplit(proxy)
+        headers = {}
+        if p.username is not None:
+            cred = f"{urllib.parse.unquote(p.username)}:{urllib.parse.unquote(p.password or '')}"
+            headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+        conn = http.client.HTTPSConnection(p.hostname, p.port, timeout=timeout, context=ctx)
+        conn.set_tunnel(host, 443, headers)
+    try:
+        conn.request(method, path)
+        resp = conn.getresponse()
+        return resp.status, resp.read(limit) if method != "HEAD" else b""
+    except http.client.HTTPException as e:  # ответ не по протоколу HTTP — связи с Apple нет
+        raise OSError(f"{type(e).__name__}: {e}") from e
+    finally:
+        conn.close()
 
 
 def apple_root_context(timeout=10):
     """SSL-контекст с системными корневыми сертификатами и «Apple Root CA» — как у ipatool для gsa.apple.com.
 
-    Сертификат скачивается с www.apple.com и сверяется по SHA-256. Ошибки: OSError (нет связи, перехват HTTPS),
-    ValueError (скачалось не то)."""
-    with env_urlopen(APPLE_ROOT_URL, timeout=timeout) as r:
-        der = r.read(64 << 10)
+    Сертификат скачивается с www.apple.com тем же путём, что у ipatool, и сверяется по SHA-256. Ошибки: OSError
+    (нет связи, перехват HTTPS, ответ не 200), ValueError (скачалось не то)."""
+    path = urllib.parse.urlsplit(APPLE_ROOT_URL).path
+    status, der = https_request("www.apple.com", path, method="GET", timeout=timeout)
+    if status != 200:
+        raise OSError(f"www.apple.com ответил HTTP {status}")
     if hashlib.sha256(der).hexdigest() != APPLE_ROOT_SHA256:
         raise ValueError("с www.apple.com скачался не тот корневой сертификат Apple")
     ctx = ssl.create_default_context()
     ctx.load_verify_locations(cadata=der)
     return ctx
-
-
-def tls_check(host, ctx, timeout=10):
-    """Защищённое соединение с host:443 с проверкой сертификата по ctx — напрямую или, как ipatool, через прокси
-    из HTTPS_PROXY (CONNECT). Ошибка — исключение (OSError, ssl.SSLError): перехват HTTPS антивирусом даёт
-    SSLCertVerificationError, отказ прокси — OSError «Tunnel connection failed»."""
-    proxy = env_proxy(host)
-    if not proxy:
-        with socket.create_connection((host, 443), timeout=timeout) as sock, \
-                ctx.wrap_socket(sock, server_hostname=host):
-            return
-    p = urllib.parse.urlsplit(proxy)
-    if p.scheme != "http" or not p.hostname:
-        raise OSError(f"прокси {proxy_label(proxy)} из HTTPS_PROXY эта проверка не поддерживает (только http://)")
-    headers = {}
-    if p.username:
-        cred = f"{urllib.parse.unquote(p.username)}:{urllib.parse.unquote(p.password or '')}"
-        headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
-    conn = http.client.HTTPSConnection(p.hostname, p.port or 80, timeout=timeout, context=ctx)
-    conn.set_tunnel(host, 443, headers)
-    try:
-        conn.connect()  # CONNECT через прокси, затем TLS с host и проверкой сертификата по ctx
-    finally:
-        conn.close()
 
 
 def adopt_old_cache():
@@ -213,6 +294,12 @@ NET_ERROR = (r"no such host|getaddrinfo|dial tcp|i/o timeout|connection (reset|r
              r"|unexpected EOF|\": EOF\b")
 ACCOUNT_LOCKED = r"account (is )?(disabled|locked)|has been (disabled|locked)"
 NO_SESSION = r"password token expired|sign.?in required|failed to get account|not logged|not provisioned"
+# когда истёк токен, list-purchases, list-versions, download и get-version-metadata сами входят заново с сохранённым
+# паролем, но с 2FA без кода не могут: «auth code is required» (ErrAuthCodeRequired). `auth login` так не пишет —
+# он просит «2FA code is required» (core.NEEDS_CODE)
+REAUTH_CODE = r"auth code is required"
+# сессии больше нет — выход из Apple ID, чтобы снова была кнопка «Войти» (TasksMixin.session_lost)
+SESSION_GONE = f"{NO_SESSION}|{REAUTH_CODE}"
 
 HINTS = (
     (NET_ERROR,
@@ -232,6 +319,9 @@ HINTS = (
     (r"license is required|license.*not found",
      "Этого приложения нет в истории покупок вашего Apple ID — Apple его не отдаст. Войдите под тем Apple ID, "
      "под которым его когда-то скачивали."),
+    (REAUTH_CODE,
+     "Сессия Apple ID истекла, а для нового входа Apple просит код подтверждения (2FA). Войдите заново "
+     "(«Войти в Apple ID») — программа спросит код."),
     (NO_SESSION,
      "Сессия входа истекла или вход не выполнен. Нажмите «Войти»."),
     (r"mac address", "ipatool не нашёл сетевой адаптер (нужен для подписи запросов). Включите сетевой адаптер."),
@@ -256,7 +346,7 @@ def explain_error(text):
 
 def fatal_error(text):
     """Нет связи, нет сессии или аккаунт заблокирован: следующие приложения пакета упадут так же."""
-    return any(re.search(p, text or "", re.I) for p in (NET_ERROR, ACCOUNT_LOCKED, NO_SESSION))
+    return any(re.search(p, text or "", re.I) for p in (NET_ERROR, ACCOUNT_LOCKED, SESSION_GONE))
 
 
 def bundled(name):
