@@ -13,8 +13,8 @@ Set-Location $PSScriptRoot
 $PythonVersion = "3.15.1"
 $PythonUrl = "https://api.nuget.org/v3-flatcontainer/python/$PythonVersion/python.$PythonVersion.nupkg"
 $PythonSha = "a53df42a4fb57132896c3d99686c19c7f13d6f126bd603a9a9bc0e9b6ed83d22"  # пакет «python» от Python Software Foundation
-$IpatoolUrl = "https://github.com/majd/ipatool/releases/download/v2.7.0/ipatool-2.7.0-windows-amd64.tar.gz"
-$IpatoolSha = "b729608716908be287c2e6972f9e8cd05f879810ae5d182fc856c9e57cca0dd5"  # ipatool-2.7.0-windows-amd64.tar.gz.sha256sum
+$IpatoolUrl = "https://github.com/majd/ipatool/releases/download/v2.8.1/ipatool-2.8.1-windows-amd64.tar.gz"
+$IpatoolSha = "a8ccd8075bc083f99caa49976997860ba5e0e3e8f76b450360cd805262542e97"  # ipatool-2.8.1-windows-amd64.tar.gz.sha256sum
 $UnicornUrl = "https://github.com/unicorn-engine/unicorn/releases/download/2.1.4/windows-mingw64-shared.7z"
 $UnicornSha = "0960f938e66fa12c448742bddd2a03aa88abeeb2b3cda7156493a2da86228d3a"  # digest ассета в релизе 2.1.4
 $UnicornDllSha = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # = UNICORN_SHA256 в restore_gui/apple.py

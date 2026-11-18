@@ -355,21 +355,40 @@ class Footprint(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("win"), "кэш ipatool в %LOCALAPPDATA% — только на Windows")
     def test_adopt_old_cache(self):
         old = Path(os.environ["LOCALAPPDATA"]) / "ipatool"
-        (old / "sap" / "apple-assets-v2").mkdir(parents=True)
-        (old / "sap" / "apple-assets-v2" / "a.bin").write_bytes(b"1")
-        (old / "unicorn").mkdir()
+        (old / "unicorn").mkdir(parents=True)
+        (old / "unicorn" / "a.bin").write_bytes(b"1")
         try:
             self.assertTrue(apple.adopt_old_cache())
-            self.assertTrue(apple.sap_ready())
-            self.assertTrue((core.IPATOOL_CACHE / "unicorn").is_dir())
+            self.assertTrue((core.IPATOOL_CACHE / "unicorn" / "a.bin").is_file())
             self.assertFalse(old.exists(), "пустая старая папка осталась")
-            (old / "sap").mkdir(parents=True)  # уже перенесено: второй раз не затирает
-            (old / "other").mkdir()
+            (old / "unicorn").mkdir(parents=True)  # уже перенесено: второй раз не затирает
+            (old / "sap").mkdir()  # служебные файлы ipatool 2.7 не переносятся
             self.assertFalse(apple.adopt_old_cache())
-            self.assertEqual(sorted(p.name for p in old.iterdir()), ["other", "sap"], "тронуто чужое")
+            self.assertEqual(sorted(p.name for p in old.iterdir()), ["sap", "unicorn"], "тронуто чужое")
         finally:
             shutil.rmtree(old, ignore_errors=True)
             shutil.rmtree(core.IPATOOL_CACHE, ignore_errors=True)
+
+    def test_old_sap_assets_dropped(self):
+        """Служебные файлы Apple от ipatool 2.7 удаляются, нынешние остаются; sap_ready смотрит на нынешние."""
+        sap = core.IPATOOL_CACHE / "sap"
+        try:
+            for name in (*apple.SAP_OLD, apple.SAP_ASSETS):
+                (sap / name).mkdir(parents=True)
+                (sap / name / "a.bin").write_bytes(b"1")
+            self.assertTrue(apple.sap_ready())
+            self.assertTrue(apple.drop_old_sap())
+            self.assertEqual([p.name for p in sap.iterdir()], [apple.SAP_ASSETS])
+            self.assertFalse(apple.drop_old_sap())
+        finally:
+            shutil.rmtree(core.IPATOOL_CACHE, ignore_errors=True)
+        self.assertFalse(apple.sap_ready())
+
+    def test_not_provisioned_means_sign_in_again(self):
+        """ipatool 2.8: сессия от 2.7 без данных нового входа — «not provisioned», это повод войти заново."""
+        out = "ERR error=\"store AMD state is not provisioned; run 'ipatool auth login' to authenticate\""
+        self.assertTrue(apple.SESSION_LOST.search(out))
+        self.assertTrue(any("«Войти»" in h for h in apple.explain_error(out)), apple.explain_error(out))
 
     def test_pymobiledevice3_folder_inside_data_dir(self):
         import pymobiledevice3.common as pmd_common

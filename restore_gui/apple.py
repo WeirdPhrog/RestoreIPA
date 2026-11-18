@@ -19,29 +19,39 @@ import restore_apps as core
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # цветовые коды ipatool в журнале не нужны
 NOT_OWNED = re.compile(r"license is required", re.I)  # Apple: приложения нет в истории этого Apple ID
-SESSION_LOST = re.compile(r"failed to get account|keyring|not logged|sign.?in|password token", re.I)
+SESSION_LOST = re.compile(r"failed to get account|keyring|not logged|sign.?in|password token|not provisioned", re.I)
 # копии сессии для параллельных запросов (in_session_copies); до 1.2.0 — %TEMP%\restore_scan_*
 SCAN_ROOT = core.DATA_DIR / "scan"
 UNICORN_VERSION = "2.1.4"
 UNICORN_SHA256 = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"  # как в исходниках ipatool
+# служебные файлы Apple для входа в кэше ipatool (sap/…): папка ipatool 2.8 и папки ipatool 2.7, которые больше
+# не нужны (ipatool 2.7 перестал входить в Apple ID: Apple сменил способ входа)
+SAP_ASSETS = "apple-assets-macos-27-26A434-arm64-v5"
+SAP_OLD = ("apple-assets-v2", "apple-storeagent-v1")
 # адреса, без которых не работает вход/скачивание (для «Проверить связь с Apple»)
 APPLE_HOSTS = (
     ("buy.itunes.apple.com", "вход и лицензии"),
     ("p25-buy.itunes.apple.com", "покупки и версии"),
     ("init.itunes.apple.com", "настройки магазина"),
-    ("fpinit.itunes.apple.com", "подпись входа"),
+    ("auth.itunes.apple.com", "вход в Apple ID"),
+    ("gsa.apple.com", "подготовка входа на этом компьютере"),
+    ("www.apple.com", "сертификат Apple для входа"),
+    ("downloaddispatch.itunes.apple.com", "ссылки на скачивание"),
     ("iosapps.itunes.apple.com", "скачивание IPA"),
     ("itunes.apple.com", "поиск и наличие в App Store"),
-    ("swcdn.apple.com", "служебные файлы для первого входа"),
+    ("updates.cdn-apple.com", "служебные файлы для первого входа"),
     ("github.com", "резерв для эмулятора (если встроенный не подошёл)"),
 )
+# сертификат этих адресов ipatool проверяет по корневому сертификату Apple, а не системному: проверяется только
+# подключение
+APPLE_OWN_CA = {"gsa.apple.com"}
 
 
 def adopt_old_cache():
     """Перенести кэш ipatool версий до 1.2.0 из %LOCALAPPDATA%\\ipatool в папку программы (core.IPATOOL_CACHE).
 
-    Там служебные файлы Apple для входа (их первая загрузка — до 15 минут) и Unicorn, вместе ~60 МБ. Переносятся
-    только эти две папки и только если в папке программы их ещё нет; пустая старая папка удаляется.
+    Переносится Unicorn и только если в папке программы его ещё нет; служебные файлы Apple оттуда — от ipatool 2.7,
+    нынешнему не нужны. Пустая старая папка удаляется.
     """
     if not sys.platform.startswith("win"):
         return False
@@ -49,7 +59,7 @@ def adopt_old_cache():
     if old == core.IPATOOL_CACHE:
         return False
     moved = False
-    for name in ("sap", "unicorn"):
+    for name in ("unicorn",):
         src, dest = old / name, core.IPATOOL_CACHE / name
         if src.is_dir() and not dest.exists():
             try:
@@ -98,18 +108,30 @@ def seed_unicorn():
 
 def sap_ready():
     """Скачаны ли уже служебные файлы Apple, нужные ipatool для входа."""
-    d = core.IPATOOL_CACHE / "sap" / "apple-assets-v2"
+    d = core.IPATOOL_CACHE / "sap" / SAP_ASSETS
     try:
         return d.is_dir() and any(d.iterdir())
     except OSError:
         return False
 
 
+def drop_old_sap():
+    """Удалить служебные файлы Apple от прежних версий ipatool (SAP_OLD) из кэша в папке программы.
+    Возвращает True, если что-то удалено."""
+    dropped = False
+    for name in SAP_OLD:
+        d = core.IPATOOL_CACHE / "sap" / name
+        if d.is_dir() and not d.is_symlink():
+            shutil.rmtree(d, ignore_errors=True)
+            dropped = dropped or not d.exists()
+    return dropped
+
+
 # ошибки, после которых следующие запросы к Apple упадут так же (пакетная установка на них прерывается)
 NET_ERROR = (r"no such host|getaddrinfo|dial tcp|i/o timeout|connection (reset|refused)|network is unreachable"
              r"|unexpected EOF|\": EOF\b")
 ACCOUNT_LOCKED = r"account (is )?(disabled|locked)|has been (disabled|locked)"
-NO_SESSION = r"password token expired|sign.?in required|failed to get account|not logged"
+NO_SESSION = r"password token expired|sign.?in required|failed to get account|not logged|not provisioned"
 
 HINTS = (
     (NET_ERROR,
@@ -169,7 +191,7 @@ def bundled(name):
 def extract_apps(obj, acc):
     """Достаёт пары (id, название) из JSON-ответа `ipatool list-purchases`.
 
-    ipatool v2.7 печатает элементы как {"id":…, "bundleID":…, "name":…, "version":…};
+    ipatool (с 2.7) печатает элементы как {"id":…, "bundleID":…, "name":…, "version":…};
     ключи сверяются без учёта регистра, на случай других версий.
     """
     if isinstance(obj, dict):

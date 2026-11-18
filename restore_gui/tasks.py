@@ -3,6 +3,7 @@
 (их даёт Backend)."""
 import contextlib
 import ipaddress
+import os
 import re
 import shutil
 import socket
@@ -17,13 +18,14 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, SESSION_LOST, ProcsClosed, adopt_old_cache, bundled, clear_stale_locks, clip,
-                    explain_error, fatal_error, fetch_available, forget, in_session_copies, kill_procs,
-                    list_versions_cmd, ownership, parse_purchases, parse_versions, popen, run_quiet, sap_ready,
-                    scan_copies, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, SESSION_LOST, ProcsClosed, adopt_old_cache, bundled,
+                    clear_stale_locks, clip, drop_old_sap, explain_error, fatal_error, fetch_available, forget,
+                    in_session_copies, kill_procs, list_versions_cmd, ownership, parse_purchases, parse_versions,
+                    popen, run_quiet, sap_ready, scan_copies, seed_unicorn)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
-SCAN_WORKERS = 4  # параллельных проверок владения
+# параллельных проверок владения: каждый ipatool 2.8 — до ~0,5 ГБ памяти и больше ядра процессора на 6–8 с
+SCAN_WORKERS = max(2, min(4, (os.cpu_count() or 4) // 2))
 IPATOOL_MISSING = "ipatool не найден в PATH (https://github.com/majd/ipatool/releases)."
 
 
@@ -247,6 +249,8 @@ class TasksMixin:
     def _prepare_engine(self):
         if adopt_old_cache():
             self.log("Служебные файлы ipatool перенесены из %LOCALAPPDATA%\\ipatool в папку программы.")
+        if drop_old_sap():
+            self.log("Удалены служебные файлы Apple от прежней версии ipatool: новой они не нужны.")
         if seed_unicorn():
             self.log("Эмулятор для входа (Unicorn 2.1.4) подготовлен из встроенной копии — GitHub не нужен.")
 
@@ -348,8 +352,10 @@ class TasksMixin:
             self.log("Нет доступа к itunes.apple.com: проверю по аккаунту все приложения каталога (дольше).")
         else:
             todo = [i for i in ids if i not in avail]
-            self.log(f"Удалено из App Store: {len(todo)}. Спрашиваю Apple, какие из них были у вас. Это может занять "
-                     "несколько минут; кнопка «Остановить» прервёт проверку, найденное останется в списке.")
+            self.log(f"Удалено из App Store: {len(todo)}.")
+        minutes = max(1, round(len(todo) * 7 / SCAN_WORKERS / 60))  # одна проверка — около 7 с
+        self.log(f"Спрашиваю Apple, какие из них были у вас. Это займёт около {minutes} мин; кнопка «Остановить» "
+                 "прервёт проверку, найденное останется в списке.")
         owned, state = {}, {"unknown": 0, "consec": 0, "err": "", "done": 0, "abort": False}
         lock = threading.Lock()
         kc = core.keychain_args()
@@ -611,9 +617,13 @@ class TasksMixin:
                 bad.append(host)
                 continue
             try:
-                req = urllib.request.Request(f"https://{host}/", method="HEAD")
-                with urllib.request.urlopen(req, timeout=10):
+                if host in APPLE_OWN_CA:
+                    socket.create_connection((host, 443), timeout=10).close()
                     ok = True
+                else:
+                    req = urllib.request.Request(f"https://{host}/", method="HEAD")
+                    with urllib.request.urlopen(req, timeout=10):  # закрыть соединение сразу после ответа
+                        ok = True
             except urllib.error.HTTPError:
                 ok = True  # сервер ответил (404/403 — нормально для корня)
             except (urllib.error.URLError, OSError) as e:

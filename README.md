@@ -159,7 +159,7 @@ py -V:3.15 -m unittest discover -s tests
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-Заранее ничего ставить не нужно: скрипт сам скачивает в `build\` Python 3.15 (официальный пакет python.org с nuget.org), ipatool 2.7.0 и Unicorn 2.1.4 из официальных релизов, сверяя **SHA-256** каждого файла. Затем создаёт окружение `build\venv` по `requirements-build.txt`, прогоняет тесты и собирает PyInstaller'ом `dist\RestoreAppStore.exe` и `dist\SHA256SUMS.txt`. Кэши pip и PyInstaller тоже остаются в `build\`.
+Заранее ничего ставить не нужно: скрипт сам скачивает в `build\` Python 3.15 (официальный пакет python.org с nuget.org), ipatool 2.8.1 и Unicorn 2.1.4 из официальных релизов, сверяя **SHA-256** каждого файла. Затем создаёт окружение `build\venv` по `requirements-build.txt`, прогоняет тесты и собирает PyInstaller'ом `dist\RestoreAppStore.exe` и `dist\SHA256SUMS.txt`. Кэши pip и PyInstaller тоже остаются в `build\`.
 
 Из Qt в сборку попадает только то, что нужно интерфейсу (список исключений — `DROP` в `RestoreAppStore.spec`). После сборки exe запускается с ключом `--check-ui`: интерфейс загружается без показа окна, и если из Qt вырезано что-то нужное, сборка останавливается.
 
