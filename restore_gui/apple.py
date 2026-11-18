@@ -1,14 +1,18 @@
 """ipatool и сервера Apple: запуск команд, разбор ответов, понятные объяснения ошибок. Без интерфейса."""
 import contextlib
+import hashlib
 import json
 import os
 import queue
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -28,23 +32,55 @@ UNICORN_SHA256 = "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de114
 # не нужны (ipatool 2.7 перестал входить в Apple ID: Apple сменил способ входа)
 SAP_ASSETS = "apple-assets-macos-27-26A434-arm64-v5"
 SAP_OLD = ("apple-assets-v2", "apple-storeagent-v1")
-# адреса, без которых не работает вход/скачивание (для «Проверить связь с Apple»)
+# файлы в SAP_ASSETS (requiredFiles в internal/sap/assets/assets.go ipatool 2.8.1). ipatool пишет каждый во временный
+# .download-* и переименовывает, так что файл с этим именем — целый
+SAP_FILES = ("AppleMediaServices", "commerce", "adid", "CoreFP", "CoreFP.icxs", "fairplayd", "FairPlayIOKit")
+# адреса, без которых не работает вход/скачивание (для «Проверить связь с Apple»). Адреса подписи входа
+# (fpinit, s.mzstatic.com) ipatool берёт из настроек магазина: sign-sap-setup и sign-sap-setup-cert в bag.xml
 APPLE_HOSTS = (
     ("buy.itunes.apple.com", "вход и лицензии"),
     ("p25-buy.itunes.apple.com", "покупки и версии"),
     ("init.itunes.apple.com", "настройки магазина"),
+    ("fpinit.itunes.apple.com", "подпись входа"),
+    ("s.mzstatic.com", "сертификат для подписи входа"),
     ("auth.itunes.apple.com", "вход в Apple ID"),
     ("gsa.apple.com", "подготовка входа на этом компьютере"),
-    ("www.apple.com", "сертификат Apple для входа"),
+    ("www.apple.com", "корневой сертификат Apple для входа"),
     ("downloaddispatch.itunes.apple.com", "ссылки на скачивание"),
     ("iosapps.itunes.apple.com", "скачивание IPA"),
     ("itunes.apple.com", "поиск и наличие в App Store"),
     ("updates.cdn-apple.com", "служебные файлы для первого входа"),
+    ("wkms-public.apple.com", "ключ к служебным файлам для первого входа"),
     ("github.com", "резерв для эмулятора (если встроенный не подошёл)"),
 )
-# сертификат этих адресов ipatool проверяет по корневому сертификату Apple, а не системному: проверяется только
-# подключение
+# сертификат этих адресов выдан от корневого сертификата Apple, которого нет среди системных: ipatool скачивает его
+# с www.apple.com и доверяет ему вместе с системными. Проверка связи делает так же (apple_root_context)
 APPLE_OWN_CA = {"gsa.apple.com"}
+APPLE_ROOT_URL = "https://www.apple.com/appleca/AppleIncRootCertificate.cer"  # как в ipatool
+# «Apple Root CA» (Apple Inc., 2006–2035): SHA-256 опубликован на apple.com/certificateauthority
+APPLE_ROOT_SHA256 = "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024"
+
+
+def apple_root_context(timeout=10):
+    """SSL-контекст с системными корневыми сертификатами и «Apple Root CA» — как у ipatool для gsa.apple.com.
+
+    Сертификат скачивается с www.apple.com и сверяется по SHA-256. Ошибки: OSError (нет связи, перехват HTTPS),
+    ValueError (скачалось не то)."""
+    with urllib.request.urlopen(APPLE_ROOT_URL, timeout=timeout) as r:
+        der = r.read(64 << 10)
+    if hashlib.sha256(der).hexdigest() != APPLE_ROOT_SHA256:
+        raise ValueError("с www.apple.com скачался не тот корневой сертификат Apple")
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(cadata=der)
+    return ctx
+
+
+def tls_check(host, ctx, timeout=10):
+    """Защищённое соединение с host:443 с проверкой сертификата по ctx; ошибка — исключение (OSError, ssl.SSLError).
+    Перехват HTTPS антивирусом даёт SSLCertVerificationError, как и у ipatool."""
+    with socket.create_connection((host, 443), timeout=timeout) as sock, \
+            ctx.wrap_socket(sock, server_hostname=host):
+        pass
 
 
 def adopt_old_cache():
@@ -74,7 +110,6 @@ def adopt_old_cache():
 
 
 def sha256_file(path):
-    import hashlib
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -107,10 +142,11 @@ def seed_unicorn():
 
 
 def sap_ready():
-    """Скачаны ли уже служебные файлы Apple, нужные ipatool для входа."""
+    """Скачаны ли уже служебные файлы Apple, нужные ipatool для входа: все SAP_FILES. После прерванной первой
+    загрузки в папке остаются только недописанные .download-* — это ещё не готово."""
     d = core.IPATOOL_CACHE / "sap" / SAP_ASSETS
     try:
-        return d.is_dir() and any(d.iterdir())
+        return all((d / name).is_file() for name in SAP_FILES)
     except OSError:
         return False
 
@@ -292,6 +328,25 @@ def close_procs():
     with _PROCS_LOCK:
         _CLOSED = True
     kill_procs()
+
+
+def clear_ipatool_tmp(wait=0.0):
+    """Удалить временные файлы ipatool (core.IPATOOL_TMP), если сейчас не работает ни один запущенный процесс, —
+    при запуске и закрытии программы. wait — сколько секунд ждать, пока завершатся уже прерванные процессы
+    (при закрытии: close_procs их только прерывает). Под _PROCS_LOCK: пока папка удаляется, popen не запустит
+    новый ipatool. Возвращает True, если папка удалена."""
+    if wait:
+        with _PROCS_LOCK:
+            procs = list(_PROCS)
+        deadline = time.monotonic() + wait
+        for p in procs:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                p.wait(max(0.0, deadline - time.monotonic()))
+    with _PROCS_LOCK:
+        if any(p.poll() is None for p in _PROCS) or not core.IPATOOL_TMP.is_dir():
+            return False
+        shutil.rmtree(core.IPATOOL_TMP, ignore_errors=True)
+        return not core.IPATOOL_TMP.exists()
 
 
 def clear_stale_locks():

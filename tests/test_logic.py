@@ -373,9 +373,12 @@ class Footprint(unittest.TestCase):
         """Служебные файлы Apple от ipatool 2.7 удаляются, нынешние остаются; sap_ready смотрит на нынешние."""
         sap = core.IPATOOL_CACHE / "sap"
         try:
-            for name in (*apple.SAP_OLD, apple.SAP_ASSETS):
+            for name in apple.SAP_OLD:
                 (sap / name).mkdir(parents=True)
                 (sap / name / "a.bin").write_bytes(b"1")
+            (sap / apple.SAP_ASSETS).mkdir(parents=True)
+            for name in apple.SAP_FILES:
+                (sap / apple.SAP_ASSETS / name).write_bytes(b"1")
             self.assertTrue(apple.sap_ready())
             self.assertTrue(apple.drop_old_sap())
             self.assertEqual([p.name for p in sap.iterdir()], [apple.SAP_ASSETS])
@@ -383,6 +386,44 @@ class Footprint(unittest.TestCase):
         finally:
             shutil.rmtree(core.IPATOOL_CACHE, ignore_errors=True)
         self.assertFalse(apple.sap_ready())
+
+    def test_sap_ready_needs_every_file(self):
+        """Прерванная первая загрузка оставляет недописанный .download-* — служебные файлы ещё не готовы."""
+        d = core.IPATOOL_CACHE / "sap" / apple.SAP_ASSETS
+        try:
+            d.mkdir(parents=True)
+            (d / ".download-123").write_bytes(b"")
+            self.assertFalse(apple.sap_ready(), "готово при одном недописанном файле")
+            for name in apple.SAP_FILES[:-1]:
+                (d / name).write_bytes(b"1")
+            self.assertFalse(apple.sap_ready(), "готово без одного файла")
+            (d / apple.SAP_FILES[-1]).write_bytes(b"1")
+            self.assertTrue(apple.sap_ready())
+        finally:
+            shutil.rmtree(core.IPATOOL_CACHE, ignore_errors=True)
+
+    def test_ipatool_tmp_inside_data_dir_and_cleared(self):
+        """Временные файлы ipatool — в папке программы, а не в %TEMP%; остатки после «Остановить» удаляются,
+        только когда ни один процесс не работает."""
+        env = core.ipatool_env()
+        for var in ("TMP", "TEMP", "TMPDIR"):
+            self.assertEqual(env[var], str(core.IPATOOL_TMP), var)
+        self.assertTrue(core.IPATOOL_TMP.is_relative_to(core.DATA_DIR))
+        left = core.IPATOOL_TMP / "ipatool-macos-27-1" / "frameworks"
+        left.mkdir(parents=True)
+        (left / "adid").write_bytes(b"1")
+        running = mock.Mock(poll=mock.Mock(return_value=None))
+        try:
+            with apple._PROCS_LOCK:
+                apple._PROCS[running] = "task"
+            self.assertFalse(apple.clear_ipatool_tmp(), "удалено из-под работающего ipatool")
+            self.assertTrue(left.exists())
+            running.poll.return_value = -9  # прерван «Остановить»
+            self.assertTrue(apple.clear_ipatool_tmp())
+            self.assertFalse(core.IPATOOL_TMP.exists())
+        finally:
+            apple.forget(running)
+            shutil.rmtree(core.IPATOOL_TMP, ignore_errors=True)
 
     def test_not_provisioned_means_sign_in_again(self):
         """ipatool 2.8: сессия от 2.7 без данных нового входа — «not provisioned», это повод войти заново."""
@@ -508,6 +549,147 @@ class Release(unittest.TestCase):
         self.assertEqual(self.rel.check(f"v{core.__version__}"), [])
         self.assertTrue(self.rel.check("v0.0.1"), "тег не той версии прошёл проверку")
         self.assertIsNone(self.rel.notes("999.0.0"))
+
+
+class _Answer:
+    """Ответ urlopen для подмены: контекстный менеджер с телом body."""
+
+    def __init__(self, body=b""):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self, *_a):
+        return self.body
+
+
+class NetCheck(unittest.TestCase):
+    """«Проверить связь с Apple» (TasksMixin.task_netcheck) без сети: ответы адресов подменены."""
+
+    def run_check(self, gsa_error=None, root_error=None):
+        from restore_gui import tasks
+
+        class Stub(tasks.TasksMixin):
+            def __init__(self):
+                self.lines = []
+
+            def log(self, text):
+                self.lines.append(text)
+
+            def post(self, fn):
+                fn()
+
+            def open_log(self):
+                pass
+
+        def tls(_host, _ctx):
+            if gsa_error:
+                raise gsa_error
+
+        def root():
+            if root_error:
+                raise root_error
+            return object()
+
+        stub = Stub()
+        public = [(2, 1, 6, "", ("17.253.144.10", 443))]  # адрес Apple, не подменённый DNS
+        with mock.patch.object(tasks.socket, "getaddrinfo", return_value=public), \
+                mock.patch.object(tasks.urllib.request, "urlopen", return_value=_Answer()), \
+                mock.patch.object(tasks, "apple_root_context", side_effect=root), \
+                mock.patch.object(tasks, "tls_check", side_effect=tls) as tls_check:
+            stub.task_netcheck()
+        return "\n".join(stub.lines), tls_check
+
+    def test_hosts_needed_by_ipatool_28(self):
+        """Подпись входа (fpinit, s.mzstatic.com из bag.xml) и ключ служебных файлов (wkms-public) тоже проверяются."""
+        hosts = [h for h, _ in apple.APPLE_HOSTS]
+        for host in ("fpinit.itunes.apple.com", "s.mzstatic.com", "wkms-public.apple.com", "gsa.apple.com",
+                     "auth.itunes.apple.com", "www.apple.com", "updates.cdn-apple.com"):
+            self.assertIn(host, hosts)
+        self.assertEqual(len(hosts), len(set(hosts)))
+
+    def test_all_reachable(self):
+        text, tls_check = self.run_check()
+        self.assertIn("Связь с Apple в порядке.", text)
+        self.assertEqual([c.args[0] for c in tls_check.call_args_list], ["gsa.apple.com"])
+        for host, _ in apple.APPLE_HOSTS:
+            self.assertIn(f"✓ {host}", text)
+
+    def test_gsa_tls_failure_is_not_ok(self):
+        """Одного открытого порта мало: перехват или обрыв защищённого соединения с gsa.apple.com — ошибка."""
+        import ssl
+        for err, hint in ((ssl.SSLCertVerificationError("certificate verify failed: unable to get local issuer"),
+                           "перехватывается"),
+                          (ConnectionResetError(10054, "connection reset"), "Нет связи с серверами Apple")):
+            text, _ = self.run_check(gsa_error=err)
+            self.assertIn("✗ gsa.apple.com", text, err)
+            self.assertNotIn("Связь с Apple в порядке", text, err)
+            self.assertIn(hint, text, err)
+
+    def test_apple_root_not_downloaded_is_not_ok(self):
+        """Корневой сертификат Apple не скачался (даже с ответом сервера, HTTP 404) — gsa.apple.com не проверен."""
+        import urllib.error
+        err = urllib.error.HTTPError(apple.APPLE_ROOT_URL, 404, "Not Found", {}, None)
+        text, tls_check = self.run_check(root_error=err)
+        self.assertIn("✗ gsa.apple.com", text)
+        self.assertIn("корневой сертификат Apple", text)
+        self.assertNotIn("Связь с Apple в порядке", text)
+        tls_check.assert_not_called()
+
+    def test_apple_root_checked_by_hash(self):
+        with mock.patch.object(apple.urllib.request, "urlopen", return_value=_Answer(b"not apple root")):
+            with self.assertRaises(ValueError):
+                apple.apple_root_context()
+
+
+class SessionLost(unittest.TestCase):
+    """Apple сообщил, что сессии нет: состояние входа сбрасывается, иначе кнопка «Войти» скрыта."""
+
+    def make(self, logged_in):
+        from restore_gui import tasks
+
+        class Stub(tasks.TasksMixin):
+            def __init__(self):
+                self._loggedIn, self.calls = logged_in, []
+
+            def log(self, _text):
+                pass
+
+            def post(self, fn):
+                fn()
+
+            def when_idle(self, fn):
+                fn()
+
+            def open_log(self):
+                pass
+
+            def forget_account(self):
+                self.calls.append("forget_account")
+                self._loggedIn = False
+
+            def start(self, _label, fn, *_args):
+                self.calls.append(fn.__name__)
+
+        return Stub()
+
+    def test_logged_out_once(self):
+        stub = self.make(True)
+        stub.hint("ERR error=\"store AMD state is not provisioned; run 'ipatool auth login' to authenticate\"")
+        stub.hint("ERR password token expired")  # вторая проверка с тем же ответом — выход уже был
+        self.assertEqual(stub.calls, ["forget_account", "task_logout"])
+
+    def test_other_errors_and_no_login_keep_state(self):
+        stub = self.make(True)
+        stub.hint("dial tcp: lookup buy.itunes.apple.com: no such host")
+        self.assertEqual(stub.calls, [])
+        stub = self.make(False)  # ошибка самого входа — выходить не из чего
+        stub.hint("ERR failed to get account")
+        self.assertEqual(stub.calls, [])
 
 
 if __name__ == "__main__":

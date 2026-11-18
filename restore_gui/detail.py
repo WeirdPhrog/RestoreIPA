@@ -169,6 +169,7 @@ class DetailMixin:
             d["check"], d["err"] = "error", "Вход не выполнен или истёк — войдите в Apple ID и повторите проверку."
             self.set_lbl(d, "acc", "Ошибка проверки: вход не выполнен или истёк", "warn")
             self.log(f"{app['name']}: list-versions — нет входа в Apple ID:\n" + d["answer"])
+            self.session_lost()
         else:
             hints = explain_error(out)
             d["check"] = "error"

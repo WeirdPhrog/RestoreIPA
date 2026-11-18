@@ -81,6 +81,9 @@ IPATOOL_HOME = DATA_DIR / "ipatool-home"
 # кэш ipatool (Unicorn, служебные файлы Apple для входа). Go кладёт его в os.UserCacheDir()/ipatool, а
 # ipatool_env() подставляет вместо него DATA_DIR: выходит DATA_DIR\ipatool, а не %LOCALAPPDATA%\ipatool
 IPATOOL_CACHE = (IPATOOL_HOME / "Library" / "Caches" if sys.platform == "darwin" else DATA_DIR) / "ipatool"
+# временные файлы ipatool (при первом входе — десятки МБ в ipatool-macos-27-*). Сам ipatool удаляет их, только если
+# завершился штатно, а не по «Остановить»; остатки GUI удаляет при запуске и закрытии (apple.clear_ipatool_tmp)
+IPATOOL_TMP = DATA_DIR / "ipatool-tmp"
 # .ipa — в папке «ipa» рядом с exe (появляется при первом скачивании); если писать туда нельзя (exe лежит
 # в Program Files и т. п.) — в «Документы\\Restore\\ipa»
 OUT_DIR = HERE / "ipa" if (HERE / "ipa").is_dir() or _writable(HERE) else Path.home() / "Documents" / APP_NAME / "ipa"
@@ -144,12 +147,15 @@ def masked(cmd):
 
 def ipatool_env(home=None):
     """Окружение для ipatool: своя домашняя папка home (по умолчанию IPATOOL_HOME; на Windows ipatool берёт её
-    из HOMEDRIVE+HOMEPATH) и свой кэш IPATOOL_CACHE (Go ищет его в %LOCALAPPDATA%, на Linux — в XDG_CACHE_HOME)."""
+    из HOMEDRIVE+HOMEPATH), свой кэш IPATOOL_CACHE (Go ищет его в %LOCALAPPDATA%, на Linux — в XDG_CACHE_HOME)
+    и своя папка временных файлов IPATOOL_TMP (Go берёт её из TMP/TEMP, на Linux и macOS — из TMPDIR)."""
     home = Path(home or IPATOOL_HOME)
     home.mkdir(parents=True, exist_ok=True)
+    IPATOOL_TMP.mkdir(parents=True, exist_ok=True)
     drive, rest = os.path.splitdrive(str(home))
+    tmp = str(IPATOOL_TMP)
     return dict(os.environ, HOME=str(home), USERPROFILE=str(home), HOMEDRIVE=drive, HOMEPATH=rest or "\\",
-                LOCALAPPDATA=str(DATA_DIR), XDG_CACHE_HOME=str(DATA_DIR))
+                LOCALAPPDATA=str(DATA_DIR), XDG_CACHE_HOME=str(DATA_DIR), TMP=tmp, TEMP=tmp, TMPDIR=tmp)
 
 
 def is_ipatool(cmd):

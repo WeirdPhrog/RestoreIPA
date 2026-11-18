@@ -18,10 +18,11 @@ from pathlib import Path
 import restore_apps as core
 
 from . import storage
-from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, SESSION_LOST, ProcsClosed, adopt_old_cache, bundled,
-                    clear_stale_locks, clip, drop_old_sap, explain_error, fatal_error, fetch_available, forget,
-                    in_session_copies, kill_procs, list_versions_cmd, ownership, parse_purchases, parse_versions,
-                    popen, run_quiet, sap_ready, scan_copies, seed_unicorn)
+from .apple import (ANSI, APPLE_HOSTS, APPLE_OWN_CA, NO_SESSION, SESSION_LOST, ProcsClosed, adopt_old_cache,
+                    apple_root_context, bundled, clear_stale_locks, clip, drop_old_sap, explain_error, fatal_error,
+                    fetch_available, forget, in_session_copies, kill_procs, list_versions_cmd, ownership,
+                    parse_purchases, parse_versions, popen, run_quiet, sap_ready, scan_copies, seed_unicorn,
+                    tls_check)
 from .device import installer_cmd, ipa_info, ipa_ok, probe_device, vtuple
 
 # параллельных проверок владения: каждый ipatool 2.8 — до ~0,5 ГБ памяти и больше ядра процессора на 6–8 с
@@ -205,6 +206,20 @@ class TasksMixin:
             self.log("ⓘ " + h)
         if hints:
             self.post(self.open_log)
+        if re.search(NO_SESSION, text or "", re.I):
+            self.session_lost()
+
+    def session_lost(self):
+        """Apple ответил, что входа нет или сессия истекла (SESSION_LOST, NO_SESSION). Кнопка «Войти» видна только
+        без входа, поэтому выходим, как по кнопке «Выйти», — когда закончится текущая операция, оставаясь на той же
+        странице (открытая панель приложения показывает, что проверка не удалась). Можно звать из любого потока."""
+        self.post(lambda: self.when_idle(self._logout_lost_session))
+
+    def _logout_lost_session(self):
+        if self._loggedIn:  # несколько проверок могли сообщить об этом одновременно — выходим один раз
+            self.log("Сессия Apple ID больше не действует — войдите заново: «Войти в Apple ID».")
+            self.forget_account()
+            self.start("Удаление недействующей сессии", self.task_logout)
 
     # ---------- задачи (выполняются в потоке) ----------
     def task_login(self, ipatool, email, password):
@@ -376,7 +391,9 @@ class TasksMixin:
                         found = {app_id: names[app_id]}
                         self.post(lambda: self.add_found(found))
                 elif SESSION_LOST.search(out):
-                    self.log("Вход не выполнен или сессия истекла. Нажмите «Войти» и повторите.")
+                    if not state["abort"]:
+                        self.log("Вход не выполнен или сессия истекла. Войдите заново и повторите.")
+                        self.session_lost()
                     state["abort"] = True
                 else:
                     state["unknown"] += 1
@@ -603,6 +620,7 @@ class TasksMixin:
     def task_netcheck(self):
         self.log("Проверка связи с серверами Apple:")
         bad, reasons = [], []
+        root = None  # SSL-контекст с корневым сертификатом Apple (apple_root_context) — для APPLE_OWN_CA
         for host, purpose in APPLE_HOSTS:
             try:
                 ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
@@ -618,7 +636,15 @@ class TasksMixin:
                 continue
             try:
                 if host in APPLE_OWN_CA:
-                    socket.create_connection((host, 443), timeout=10).close()
+                    # как ipatool: сертификат сверяется по корневому сертификату Apple — одного TCP мало, иначе
+                    # перехват или обрыв защищённого соединения выглядел бы как «связь в порядке»
+                    if root is None:
+                        try:
+                            root = apple_root_context()
+                        except (OSError, ValueError) as e:  # HTTPError — тоже OSError
+                            raise OSError("не скачался корневой сертификат Apple с www.apple.com: "
+                                          f"{getattr(e, 'reason', None) or e}") from e
+                    tls_check(host, root)
                     ok = True
                 else:
                     req = urllib.request.Request(f"https://{host}/", method="HEAD")
@@ -628,7 +654,7 @@ class TasksMixin:
                 ok = True  # сервер ответил (404/403 — нормально для корня)
             except (urllib.error.URLError, OSError) as e:
                 ok = False
-                reason = getattr(e, "reason", e)
+                reason = getattr(e, "reason", None) or e
             if ok:
                 self.log(f"  ✓ {host} — {purpose}")
             else:

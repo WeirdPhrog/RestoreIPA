@@ -367,6 +367,28 @@ class Window(unittest.TestCase):
         finally:
             b.stream, b.ask_main, b.session_ok, b.post, tasks.sap_ready, b.loggedIn, b.account = saved
 
+    def test_lost_session_shows_login_button(self):
+        """Apple сообщил, что сессии нет («not provisioned» и т. п.): вход сбрасывается, форма входа открывается.
+        Раньше подсказка «Нажмите „Войти“» указывала на скрытую кнопку, а openLogin при входе ничего не делал."""
+        b = self.backend
+        self.wait_idle()
+        started = []
+        saved = (b.post, b.start, b.loggedIn, b.account, b.loginOpen)
+        b.post, b.start = (lambda fn: fn()), (lambda label, fn, *a: started.append(fn))
+        try:
+            b.loggedIn, b.account, b.loginOpen = True, "someone@example.com", False
+            b.hint("ERR error=\"store AMD state is not provisioned; run 'ipatool auth login' to authenticate\"")
+            self.assertFalse(b.loggedIn)
+            self.assertEqual(b.account, "")
+            self.assertEqual(started, [b.task_logout])
+            b.openLogin("")
+            self.assertTrue(b.loginOpen)
+        finally:
+            b.post, b.start = saved[:2]
+            b.loggedIn, b.account, b.loginOpen = saved[2:]
+        self.pump()
+        self.assertEqual(MESSAGES, [], "\n".join(MESSAGES))
+
     def test_download_creates_missing_parent_folders(self):
         """Если рядом с exe писать нельзя, папка — Документы\\Restore\\ipa; если нет даже Restore, скачивание не падает."""
         import tempfile

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 import restore_apps as core
 
 from . import storage, theme
-from .apple import close_procs, scan_copies
+from .apple import clear_ipatool_tmp, close_procs, scan_copies
 from .catalog import Catalog, parse_app_ref, plural, split_disguise
 from .detail import DetailMixin
 from .icons import IconLoader, cached
@@ -133,6 +133,7 @@ class Backend(QObject, TasksMixin, DetailMixin):
             self.start_background()
 
     def start_background(self):
+        clear_ipatool_tmp()  # временные файлы ipatool, оставшиеся после сбоя: ни один ipatool ещё не запущен
         # сессия живёт только пока открыта программа: остатки прошлого запуска (например, после сбоя) стираем.
         # `ipatool auth revoke` может идти секунды — в фоне; кнопки на это время заблокированы (start).
         if (core.IPATOOL_HOME / ".ipatool").exists() or scan_copies():
@@ -404,16 +405,19 @@ class Backend(QObject, TasksMixin, DetailMixin):
         if self._busy:
             self.show_notice("Подождите", "Сначала дождитесь окончания текущей операции или нажмите «Остановить».")
             return
-        # всё, что знали об аккаунте, забываем сразу: на общем компьютере следующий человек не должен видеть
-        # чужие покупки, а его находки — смешиваться с ними
         self.close_detail()  # её проверки больше не повторяются (d["alive"] = False)
+        self.forget_account()
+        self.showPage("home")
+        self.start("Выход из Apple ID", self.task_logout)  # сессию — в фоне
+
+    def forget_account(self):
+        """Всё, что знали об аккаунте, забываем сразу: на общем компьютере следующий человек не должен видеть
+        чужие покупки, а его находки — смешиваться с ними. Кнопка «Войти» снова видна."""
         self.purchases, self.avail = [], None
         self.owned_state.clear()
         self.clear_selection()
         self.refresh_list_keep()
         self.on_login_result(False, "")
-        self.showPage("home")
-        self.start("Выход из Apple ID", self.task_logout)  # сессию — в фоне
 
     def on_purchases_result(self, acc, avail):
         self.purchases = [{"id": i, "name": n} for i, n in sorted(acc.items(), key=lambda kv: kv[1].casefold())]
@@ -528,3 +532,5 @@ class Backend(QObject, TasksMixin, DetailMixin):
             self.detail["alive"] = False
         close_procs()  # иначе ipatool и установщик продолжили бы работать без окна; новых не запускаем
         self.wipe_session()
+        # прерванный ipatool не удаляет свои временные файлы (при первом входе — десятки МБ)
+        clear_ipatool_tmp(wait=3)
